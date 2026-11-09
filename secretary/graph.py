@@ -135,6 +135,27 @@ class SecretaryAssistant:
             config={"recursion_limit": recursion_limit},
         )
 
+    def stream_events(
+        self,
+        question: str,
+        *,
+        history: list[AnyMessage] | None = None,
+        recursion_limit: int = DEFAULT_RECURSION_LIMIT,
+    ) -> Iterator[tuple[str, Any]]:
+        """同时返回节点更新和 LLM token，供 Web UI 做实时展示。
+
+        事件形式为 ``(mode, data)``：
+          * mode="updates"：节点执行完成后的状态增量；
+          * mode="messages"：模型 token 与元数据，可用 metadata["langgraph_node"]
+            过滤出某个 Worker 的最终回答，避免把 Supervisor 的 JSON 也打到界面上。
+        """
+
+        return self.graph.stream(
+            self._build_input(question, history),
+            stream_mode=["updates", "messages"],
+            config={"recursion_limit": recursion_limit},
+        )
+
     def invoke(
         self,
         question: str,

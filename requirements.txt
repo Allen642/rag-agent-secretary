@@ -14,6 +14,9 @@ torch>=2.9,<3.0
 # 模型下载/缓存管理（scripts/download_model.py 使用）
 huggingface-hub>=1.3,<3.0
 
+# ===== Web UI =====
+streamlit>=1.50,<2.0
+
 # ===== 配置 =====
 python-dotenv>=1.0,<2.0
 # Windows 终端的 ANSI 颜色支持（chat.py 可选使用）

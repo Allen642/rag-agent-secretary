@@ -16,6 +16,7 @@
 | --- | --- |
 | 生成模型 | DeepSeek API（`https://api.deepseek.com`，模型 `deepseek-flash`） |
 | 编排 | LangChain + LangGraph（Supervisor 模式） |
+| Web UI | Streamlit（流式输出、路由状态、检索来源） |
 | 向量库 | ChromaDB `PersistentClient`，数据落盘到 `data/runtime/chroma/` |
 | Embedding | `sentence-transformers` + `BAAI/bge-small-zh-v1.5`，**纯 CPU** |
 | 运行环境 | Windows 11 / Python 3.11+ / 无需 NVIDIA GPU |
@@ -80,6 +81,7 @@ rag/
 ├─ test_run.py           # 路由 + 检索端到端演示
 ├─ test_memory.py        # 自动记忆写入/召回验证
 ├─ chat.py               # 命令行连续对话入口
+├─ app.py                # Streamlit Web UI
 ├─ requirements.txt
 ├─ .env.example
 └─ README.md
@@ -159,6 +161,9 @@ $env:HF_ENDPOINT="https://hf-mirror.com"
 
 # 7. 验证自动记忆（使用临时知识库，不污染正式数据）
 .\.venv\Scripts\python.exe test_memory.py
+
+# 8. 启动 Web UI
+.\.venv\Scripts\streamlit.exe run app.py
 ```
 
 如果虚拟环境已存在，可以跳过第 1、2 步。
@@ -208,6 +213,41 @@ cd F:\rag
 聊天会把最近 20 条消息作为上下文，所以可以追问“再说简单点”，不用重复背景。
 对话上下文只存在进程内，退出后不会保留聊天记录；但**长期记忆会持久化到
 `data/runtime/chroma`**，下次启动仍然生效。
+
+## Web UI（推荐）
+
+```powershell
+cd F:\rag
+.\.venv\Scripts\streamlit.exe run app.py
+```
+
+浏览器打开：
+
+```text
+http://localhost:8501
+```
+
+如果端口被占用：
+
+```powershell
+.\.venv\Scripts\streamlit.exe run app.py --server.port 8502
+```
+
+Web UI 功能：
+
+- **流式回答**：Worker 的最终回答逐 token 显示；
+- **Supervisor 路由状态**：实时显示 `主管正在思考…… 路由至 study_expert`；
+- **检索来源**：折叠面板展示 Worker 调用的 query 和 Chroma 返回原文，
+  内容带 `[长期记忆]` / `[知识库/主题]` 标记；
+- **清空对话**：只清空当前会话上下文，不删除长期记忆；
+- **查看长期记忆**：侧边栏展示最近写入的自动记忆和 ID；
+- 连续对话最多带最近 20 条消息。
+
+侧边栏的“清空对话”等价于 CLI 的 `/reset`；“查看长期记忆”直接读取
+`ChromaKnowledgeBase.list_texts(where={"source": "auto_memory"})`。
+
+> `app.py` 使用正式知识库 `data/runtime/chroma` 和长期记忆。
+> 如果想用临时库测试，可复制一份 `app.py` 或改用 CLI 的 `--temp-kb`。
 
 ## 自动记忆如何工作
 
