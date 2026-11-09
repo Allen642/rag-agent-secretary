@@ -8,6 +8,8 @@ from langchain_core.messages import BaseMessage
 def content_to_text(content: object) -> str:
     """把字符串或多模态内容块统一转成可读文本。"""
 
+    if content is None:
+        return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
