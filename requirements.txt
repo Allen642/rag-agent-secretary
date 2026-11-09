@@ -1,0 +1,20 @@
+# ===== 核心编排：LangChain + LangGraph =====
+langchain>=1.0,<2.0
+langchain-openai>=1.0,<2.0
+langgraph>=1.0,<2.0
+
+# ===== 本地向量库 =====
+chromadb>=1.0,<2.0
+
+# ===== 本地 CPU Embedding =====
+# sentence-transformers 会拉取 CPU 版 PyTorch；Windows 下 PyPI 的 torch
+# 默认是 CPU 构建，不需要 CUDA。这里显式限制大版本，避免未来 breaking change。
+sentence-transformers>=5.0,<7.0
+torch>=2.9,<3.0
+# 模型下载/缓存管理（scripts/download_model.py 使用）
+huggingface-hub>=1.3,<3.0
+
+# ===== 配置 =====
+python-dotenv>=1.0,<2.0
+# Windows 终端的 ANSI 颜色支持（chat.py 可选使用）
+colorama>=0.4.6,<1.0

@@ -1,0 +1,27 @@
+# 运行时数据（个人记忆、向量库）与个人文档，默认不提交
+data/runtime/
+data/docs/
+
+# 但保留示例目录，方便别人 clone 后直接体验
+!data/example/
+
+# 运行时生成的证书/缓存/日志
+*.log
+models/
+pack/*.zip
+
+# 本地环境与密钥
+.venv/
+.env
+.env.*
+!.env.example
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 编辑器
+.vscode/
+.idea/

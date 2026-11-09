@@ -1,0 +1,5 @@
+{
+  "name": "example-knowledge-pack",
+  "version": 1,
+  "description": "演示用知识包：只含通用示例内容，不含任何个人资料。导入后可用于验证检索链路。"
+}
