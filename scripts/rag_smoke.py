@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 # 允许直接执行 `python scripts/rag_smoke.py`，无需先安装成包
@@ -23,7 +24,18 @@ from secretary.rag import ChromaKnowledgeBase
 
 
 def main() -> int:
-    kb = ChromaKnowledgeBase(collection_name="rag_smoke_test")
+    # 使用临时目录，避免测试数据混进正式知识库
+    with tempfile.TemporaryDirectory(
+        ignore_cleanup_errors=True, prefix="rag-smoke-"
+    ) as temp_dir:
+        kb = ChromaKnowledgeBase(
+            persist_dir=Path(temp_dir) / "chroma",
+            collection_name="rag_smoke_test",
+        )
+        return _run_smoke(kb)
+
+
+def _run_smoke(kb: ChromaKnowledgeBase) -> int:
 
     documents = [
         "高等数学中，数列极限的严格定义使用 ε-N 语言描述。",
