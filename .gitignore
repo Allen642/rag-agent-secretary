@@ -1,6 +1,8 @@
 # 运行时数据（个人记忆、向量库）与个人文档，默认不提交
 data/runtime/
-data/docs/
+# 保留目录骨架，但不提交里面的个人文档
+data/docs/*
+!data/docs/.gitkeep
 
 # 但保留示例目录，方便别人 clone 后直接体验
 !data/example/
