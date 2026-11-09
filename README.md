@@ -5,6 +5,7 @@
 - **Supervisor** 把问题路由给 `study_expert` / `life_expert`；
 - **Worker** 通过工具检索本地 ChromaDB；
 - **MemoryCurator** 在每轮回答结束后自动判断是否值得写入长期记忆；
+- **Web UI 预览**：基于 Streamlit 构建的极简交互界面，支持流式回答、Agent 路由追踪与长期记忆面板。
 - 你也可以直接说“记住……”，强制保存；
 - 知识库支持新增、覆盖、查看、检索、删除，不是只读模式。
 
