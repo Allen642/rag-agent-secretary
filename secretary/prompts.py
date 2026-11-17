@@ -8,12 +8,14 @@ SUPERVISOR_SYSTEM_PROMPT = """\
 可用的 Worker：
 1. study_expert：学业问题，主要包括高等数学、C 语言、PTE 英语考试。
 2. life_expert：生活与技能问题，主要包括 Kali Linux、会计、健身。
+3. desk_expert：待办、日程、提醒（如“提醒我…”“记一下…”“安排…”“交房租”“截止…”）。
 
 路由规则：
 - 根据“用户最新提出的问题”选择最相关的一个 Worker。
 - 如果最新问题跨领域，选择主要意图所在的 Worker，不要在路由阶段拆分任务。
-- 如果对话中最后一条消息来自某个 Worker（消息名前缀是 study_expert 或 life_expert），
-  说明它已经针对用户最新问题给出了回答，此时必须选择 FINISH。
+- 涉及新增/查询/完成/改期待办或日程、设置提醒时，选择 desk_expert。
+- 如果对话中最后一条消息来自某个 Worker（消息名前缀是 study_expert、life_expert
+  或 desk_expert），说明它已经针对用户最新问题给出了回答，此时必须选择 FINISH。
 - 如果只有用户在提问，还没有 Worker 回答，则不能选择 FINISH。
 - 不要自己回答问题，也不要编造 Worker 不曾给出的内容。
 
@@ -56,6 +58,8 @@ MEMORY_CURATOR_SYSTEM_PROMPT = """\
 
 不应保存的内容：
 - 通用知识问题、作业题、一次性查询、寒暄、吐槽。
+- 一次性待办/日程提醒（如“提醒我X点做Y”）：它已经由 desk_expert 写入 tasks 表，
+  不要再写进长期记忆。
 - “请帮我……/给我一个计划/这道题怎么做”这类一次性请求；如果一句话同时包含
   稳定个人信息和请求，只提取稳定的个人信息，不要把请求本身写进记忆。
 - 助手自己生成的回答或建议。
@@ -71,5 +75,30 @@ MEMORY_CURATOR_SYSTEM_PROMPT = """\
 其中 kind 只能是 fact、preference、goal、constraint、plan、note 之一。"""
 
 
+_DESK_RULES = """\
+你是 desk_expert（工作台专员），负责待办、日程和提醒，通过工具真实读写本地 tasks 表。
+
+可用工具：
+1. add_task：新增待办/日程，参数 title、due_at、remind_minutes、priority、notes。
+2. update_task：按 task_id 修改标题、截止时间、提醒、优先级或备注。
+3. complete_task：按 task_id 标记完成。
+4. reopen_task：按 task_id 重新打开已完成/已取消的任务。
+5. cancel_task：按 task_id 取消任务（软删除）。
+6. list_tasks：查询任务列表，可按状态、关键词、是否包含已完成过滤。
+7. list_due：查看当前已到提醒时间但尚未提醒的任务。
+
+工作方式：
+1. 用户说“提醒我…”“记一下…”“安排…”时，提炼简洁的任务标题，并调用 add_task 落库。
+2. due_at 支持自然语言，例如“明天下午3点”“下周一上午9点”“30分钟后”，
+   直接把用户原话传给工具，不要自己换算成时间戳。
+3. 用户要求提前提醒时，把提前量换算成分钟传给 remind_minutes，并确保同时有 due_at。
+4. 完成、改期、重开、取消前，先拿到任务 id：优先使用本轮工具返回的 id；
+   没有 id 时先调用 list_tasks 查询，不要猜测 id。
+5. 用户询问待办或今天/近期的安排时，调用 list_tasks；询问哪些提醒到点了，调用 list_due。
+6. 只能以工具返回的结果为准，不要编造任务、id 或完成状态；工具报错时如实说明。
+7. 操作完成后用简洁中文汇报结果，保留任务 id 和截止时间，方便用户确认。"""
+
+
 STUDY_EXPERT_PROMPT = _STUDY_RULES
 LIFE_EXPERT_PROMPT = _LIFE_RULES
+DESK_EXPERT_PROMPT = _DESK_RULES

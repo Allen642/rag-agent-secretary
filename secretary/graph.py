@@ -1,10 +1,12 @@
-"""LangGraph 编排：Supervisor + 两个 Worker + 自动记忆。
+"""LangGraph 编排：Supervisor + 三个 Worker + 自动记忆。
 
 图结构（Supervisor 模式）：
 
     START -> supervisor --(study_expert)--> study_expert --+
                      |                                     |
-                     +----(life_expert)--> life_expert ----+
+                     +----(life_expert)--> life_expert -----+
+                     |                                     |
+                     +----(desk_expert)--> desk_expert -----+
                      |                                     |
                      +----(FINISH)--> memory_curator -> END
                                       ^
@@ -25,16 +27,17 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 
 from .config import Settings, get_settings
+from .desk import DeskStore
 from .llm import build_chat_model
 from .memory import MemoryCurator
 from .message_utils import message_text
 from .rag import ChromaKnowledgeBase
 from .state import SecretaryState
 from .supervisor import Supervisor
-from .tools import make_search_tool
-from .workers import LifeExpert, StudyExpert
+from .tools import make_desk_tools, make_search_tool
+from .workers import DeskExpert, LifeExpert, StudyExpert
 
-WORKER_NODES = ("study_expert", "life_expert")
+WORKER_NODES = ("study_expert", "life_expert", "desk_expert")
 DEFAULT_RECURSION_LIMIT = 20
 
 
@@ -52,6 +55,7 @@ def build_secretary_graph(
     llm: BaseChatModel,
     *,
     knowledge_base: ChromaKnowledgeBase | None = None,
+    desk_store: DeskStore | None = None,
     enable_auto_memory: bool = True,
 ):
     """组装并编译 Secretary 图。
@@ -59,19 +63,24 @@ def build_secretary_graph(
     参数 ``llm`` 由外部注入，既可以是 DeepSeek，也可以是测试用模型，
     这样图结构本身可以脱离网络独立测试。``enable_auto_memory=False``
     可用于离线演示或单元测试，避免产生真实记忆写入。
+    ``desk_store`` 不传时使用默认的 ``data/runtime/desk.db``；测试和演示
+    应注入临时库，避免污染真实工作台数据。
     """
 
     knowledge_base = knowledge_base or ChromaKnowledgeBase()
+    desk_store = desk_store or DeskStore()
     search_tool = make_search_tool(knowledge_base)
 
     supervisor = Supervisor(llm)
     study_expert = StudyExpert(llm, [search_tool])
     life_expert = LifeExpert(llm, [search_tool])
+    desk_expert = DeskExpert(llm, make_desk_tools(desk_store))
 
     builder = StateGraph(SecretaryState)
     builder.add_node("supervisor", supervisor)
     builder.add_node("study_expert", study_expert)
     builder.add_node("life_expert", life_expert)
+    builder.add_node("desk_expert", desk_expert)
 
     finish_target = END
     if enable_auto_memory:
@@ -86,13 +95,15 @@ def build_secretary_graph(
         {
             "study_expert": "study_expert",
             "life_expert": "life_expert",
+            "desk_expert": "desk_expert",
             "FINISH": finish_target,
         },
     )
 
-    # 两个 Worker 都回到主管，由主管判断是否 FINISH
+    # 三个 Worker 都回到主管，由主管判断是否 FINISH
     builder.add_edge("study_expert", "supervisor")
     builder.add_edge("life_expert", "supervisor")
+    builder.add_edge("desk_expert", "supervisor")
 
     return builder.compile()
 
@@ -106,14 +117,17 @@ class SecretaryAssistant:
         llm: BaseChatModel | None = None,
         settings: Settings | None = None,
         knowledge_base: ChromaKnowledgeBase | None = None,
+        desk_store: DeskStore | None = None,
         enable_auto_memory: bool = True,
     ) -> None:
         self.settings = settings or get_settings()
         self.llm = llm or build_chat_model(self.settings)
         self.knowledge_base = knowledge_base or ChromaKnowledgeBase()
+        self.desk_store = desk_store or DeskStore()
         self.graph = build_secretary_graph(
             self.llm,
             knowledge_base=self.knowledge_base,
+            desk_store=self.desk_store,
             enable_auto_memory=enable_auto_memory,
         )
 

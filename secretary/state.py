@@ -12,7 +12,7 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
 # 与图节点名保持一致，FINISH 表示本轮任务结束
-RouteName = Literal["study_expert", "life_expert", "FINISH"]
+RouteName = Literal["study_expert", "life_expert", "desk_expert", "FINISH"]
 
 
 class SecretaryState(TypedDict, total=False):

@@ -31,10 +31,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from secretary.desk import DEFAULT_DESK_DB, DeskStore, Task, is_date_only, to_local_iso
-
-STATUS_LABELS = {"open": "待办", "done": "已完成", "cancelled": "已取消"}
-PRIORITY_LABELS = {"low": "低", "medium": "中", "high": "高"}
+from secretary.desk import (
+    DEFAULT_DESK_DB,
+    PRIORITY_LABELS,
+    STATUS_LABELS,
+    DeskStore,
+    Task,
+    is_date_only,
+    to_local_iso,
+)
 
 
 def _configure_stdout() -> None:

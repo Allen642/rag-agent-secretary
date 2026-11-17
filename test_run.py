@@ -1,8 +1,9 @@
 """端到端演示入口。
 
-真实模式（默认）：调用 DeepSeek，观察 Supervisor 如何把两个问题分别
-路由给 study_expert 和 life_expert，并在回答后自动判断是否写入长期记忆。
-默认使用临时知识库，不会污染正式 data/runtime/chroma；加 --live-kb 才使用正式库。
+真实模式（默认）：调用 DeepSeek，观察 Supervisor 如何把三个问题分别
+路由给 study_expert、life_expert 和 desk_expert，并在回答后自动判断是否写入长期记忆。
+默认使用临时知识库和工作台数据库，不会污染正式 data/runtime；加 --live-kb
+才使用正式库。
 
 离线模式（--offline）：使用确定性的 DemoChatModel，不访问网络，仅验证
 LangGraph 路由和工具调用骨架是否通畅（不写真实 Chroma）。
@@ -25,6 +26,7 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
 from secretary.config import get_settings, require_api_key
 from secretary.demo_model import DemoChatModel
+from secretary.desk import DeskStore
 from secretary.graph import (
     WORKER_NODES,
     SecretaryAssistant,
@@ -37,6 +39,7 @@ from secretary.rag import ChromaKnowledgeBase
 QUESTIONS = [
     "帮我讲讲高数里极限的定义，应该怎么理解？",
     "我想练腹肌，给我一个适合新手的健身计划。",
+    "提醒我明天下午3点交房租",
 ]
 
 
@@ -151,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     with temp_context as temp_dir:
-        # 默认使用临时空知识库，避免演示问题产生的自动记忆污染正式数据
+        # 默认使用临时空知识库和工作台数据库，避免演示数据污染正式数据
         knowledge_base = (
             ChromaKnowledgeBase(
                 persist_dir=Path(temp_dir) / "chroma",
@@ -160,11 +163,13 @@ def main(argv: list[str] | None = None) -> int:
             if temp_dir
             else None
         )
+        desk_store = DeskStore(Path(temp_dir) / "desk.db") if temp_dir else None
 
         assistant = SecretaryAssistant(
             llm=llm,
             settings=settings,
             knowledge_base=knowledge_base,
+            desk_store=desk_store,
             enable_auto_memory=not args.offline,
         )
 
@@ -179,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"路由验证失败：没有访问到 Worker {sorted(missing)}")
             return 1
 
-        print("路由验证通过：两个问题分别到达 study_expert 和 life_expert。")
+        print("路由验证通过：三个问题分别到达 study_expert、life_expert 和 desk_expert。")
         if args.offline:
             print(
                 "提示：配置 DEEPSEEK_API_KEY 后去掉 --offline，即可验证真实模型链路。"

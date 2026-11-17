@@ -29,13 +29,13 @@ logger = logging.getLogger(__name__)
 ROUTE_FORMAT_INSTRUCTION = """\
 
 请严格按下面格式输出一个 JSON 对象，不要输出 Markdown 代码块或额外解释：
-{"next_agent": "study_expert 或 life_expert 或 FINISH", "reason": "一句话路由依据"}"""
+{"next_agent": "study_expert 或 life_expert 或 desk_expert 或 FINISH", "reason": "一句话路由依据"}"""
 
 
 class RouteDecision(BaseModel):
     """Supervisor 的结构化输出。"""
 
-    next_agent: Literal["study_expert", "life_expert", "FINISH"] = Field(
+    next_agent: Literal["study_expert", "life_expert", "desk_expert", "FINISH"] = Field(
         description="下一个要执行的节点；任务已完成时填 FINISH"
     )
     reason: str = Field(description="一句话说明路由依据")

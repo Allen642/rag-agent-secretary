@@ -2,6 +2,8 @@
 
 from .models import (
     PRIORITIES,
+    PRIORITY_LABELS,
+    STATUS_LABELS,
     STATUSES,
     Task,
     is_date_only,
@@ -20,7 +22,9 @@ __all__ = [
     "DEFAULT_DESK_DB",
     "NOTIFICATION_KINDS",
     "PRIORITIES",
+    "PRIORITY_LABELS",
     "STATUSES",
+    "STATUS_LABELS",
     "DeskStore",
     "Notification",
     "Task",

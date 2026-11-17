@@ -25,6 +25,8 @@ from langchain_core.messages import (
 )
 from langchain_core.outputs import ChatGeneration, ChatResult
 
+from .tools import DESK_TOOL_NAMES
+
 STUDY_KEYWORDS = (
     "高数",
     "数学",
@@ -53,6 +55,16 @@ LIFE_KEYWORDS = (
     "记账",
     "财务",
     "报表",
+)
+DESK_KEYWORDS = (
+    "提醒",
+    "待办",
+    "日程",
+    "安排",
+    "别忘了",
+    "记一下",
+    "交房租",
+    "截止",
 )
 
 
@@ -124,6 +136,7 @@ class DemoChatModel(BaseChatModel):
                     "[system]",
                     "[study_expert]",
                     "[life_expert]",
+                    "[desk_expert]",
                 )
             )
         ]
@@ -132,6 +145,7 @@ class DemoChatModel(BaseChatModel):
         if role_lines and (
             role_lines[-1].startswith("[study_expert]")
             or role_lines[-1].startswith("[life_expert]")
+            or role_lines[-1].startswith("[desk_expert]")
         ):
             next_agent = "FINISH"
             reason = "Worker 已给出回答，本轮任务完成"
@@ -139,7 +153,11 @@ class DemoChatModel(BaseChatModel):
             lowered = question.lower()
             study_hit = any(keyword in lowered for keyword in STUDY_KEYWORDS)
             life_hit = any(keyword in lowered for keyword in LIFE_KEYWORDS)
-            if life_hit and not study_hit:
+            desk_hit = any(keyword in lowered for keyword in DESK_KEYWORDS)
+            if desk_hit:
+                next_agent = "desk_expert"
+                reason = "问题涉及待办/日程/提醒，交给 desk_expert"
+            elif life_hit and not study_hit:
                 next_agent = "life_expert"
                 reason = "问题涉及健身/生活技能，交给 life_expert"
             else:
@@ -190,6 +208,43 @@ class DemoChatModel(BaseChatModel):
             ],
         )
 
+    def _desk_reply(self, messages: Sequence[BaseMessage]) -> AIMessage:
+        """desk_expert 的离线逻辑：调用一次 list_tasks 证明链路打通。"""
+
+        question = _latest_human_text(messages)
+
+        # 与 _worker_reply 一样，只看当前这轮问题之后是否已有工具结果
+        last_human_index = 0
+        for index, message in enumerate(messages):
+            if isinstance(message, HumanMessage):
+                last_human_index = index
+        tool_messages = [
+            message
+            for message in messages[last_human_index + 1 :]
+            if isinstance(message, ToolMessage)
+        ]
+
+        if tool_messages:
+            tool_result = str(tool_messages[-1].content)
+            content = (
+                "【离线演示】已调用 list_tasks，链路打通。\n"
+                f"你的问题是：{question}\n\n"
+                f"工具返回：\n{tool_result}"
+            )
+            return AIMessage(content=content)
+
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "list_tasks",
+                    "args": {},
+                    "id": f"call-desk-{uuid4().hex[:8]}",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
     def _generate(
         self,
         messages: list[BaseMessage],
@@ -204,6 +259,8 @@ class DemoChatModel(BaseChatModel):
         # Supervisor 现在不绑定工具，而是要求模型直接输出 JSON
         if "下面是当前对话记录" in last_text:
             message = self._route_decision(messages)
+        elif names & set(DESK_TOOL_NAMES):
+            message = self._desk_reply(messages)
         elif "search_knowledge_base" in names:
             message = self._worker_reply(messages)
         else:

@@ -17,6 +17,14 @@ from typing import Any
 STATUSES: tuple[str, ...] = ("open", "done", "cancelled")
 PRIORITIES: tuple[str, ...] = ("low", "medium", "high")
 
+# 中文展示标签与上面的取值一一对应，避免 CLI/工具各写一套叫法
+STATUS_LABELS: dict[str, str] = {
+    "open": "待办",
+    "done": "已完成",
+    "cancelled": "已取消",
+}
+PRIORITY_LABELS: dict[str, str] = {"low": "低", "medium": "中", "high": "高"}
+
 # 只写日期时，默认按本地 18:00 计算截止时间
 DATE_ONLY_HOUR = 18
 
