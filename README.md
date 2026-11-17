@@ -1,11 +1,12 @@
-# 个人秘书：可写长期记忆的 RAG + Agent
+# 个人秘书：带工作台的 RAG + Agent
 
-一个面向个人知识管理的可扩展 Agent 骨架：
+一个面向个人知识管理与日常事务的可扩展 Agent 骨架：
 
-- **Supervisor** 把问题路由给 `study_expert` / `life_expert`；
+- **Supervisor** 把问题路由给 `study_expert` / `life_expert` / `desk_expert`；
 - **Worker** 通过工具检索本地 ChromaDB；
+- **desk_expert** 负责工作台：待办、日程、提醒、每日简报，支持“明天下午3点”这类自然语言时间；
 - **MemoryCurator** 在每轮回答结束后自动判断是否值得写入长期记忆；
-- **Web UI 预览**：基于 Streamlit 构建的极简交互界面，支持流式回答、Agent 路由追踪与长期记忆面板。
+- **Web UI 预览**：基于 Streamlit 构建的极简交互界面，支持流式回答、Agent 路由追踪、长期记忆面板与侧栏工作台。
 - 你也可以直接说“记住……”，强制保存；
 - 知识库支持新增、覆盖、查看、检索、删除，不是只读模式。
 
@@ -32,6 +33,8 @@ supervisor ──(study_expert)──> study_expert ──┐
   │                                           │
   ├──(life_expert)──────────> life_expert ────┤
   │                                           │
+  ├──(desk_expert)──────────> desk_expert ────┤
+  │                                           │
   └──(FINISH)──> memory_curator ──> END       │
                        ▲                      │
                        └──────────────────────┘
@@ -55,12 +58,18 @@ rag-agent-secretary/
 │  ├─ json_utils.py      # 容错 JSON 提取
 │  ├─ demo_model.py      # 仅用于 --offline 的确定性假模型
 │  ├─ message_utils.py   # 消息转文本/截断
+│  ├─ desk/
+│  │  ├─ models.py       # 任务/通知数据模型
+│  │  ├─ store.py        # SQLite 工作台存储与查询
+│  │  └─ timeparse.py    # “明天下午3点”等自然语言时间解析
 │  ├─ workers/
 │  │  ├─ base.py         # 通用 Worker：ReAct 工具循环
 │  │  ├─ study_expert.py # 高数、C 语言、PTE
-│  │  └─ life_expert.py  # Kali、会计、健身
+│  │  ├─ life_expert.py  # Kali、会计、健身
+│  │  └─ desk_expert.py  # 待办、日程、提醒
 │  ├─ tools/
-│  │  └─ retrieval.py    # 真实 Chroma 检索工具
+│  │  ├─ retrieval.py    # 真实 Chroma 检索工具
+│  │  └─ desk_tools.py   # 工作台读写工具（add/list/done 等）
 │  └─ rag/
 │     ├─ embeddings.py   # 本地 CPU Embedding
 │     ├─ chunking.py     # Markdown 按标题切块
@@ -70,18 +79,25 @@ rag-agent-secretary/
 │  ├─ kb.py              # 知识库管理 CLI（查看/检索/删除）
 │  ├─ ingest.py          # 文档导入 CLI
 │  ├─ pack_kb.py         # 知识包打包/查看 CLI
+│  ├─ desk.py            # 工作台 CLI（增删改查/完成/取消）
+│  ├─ remind_daemon.py   # 本地提醒与每日简报 daemon
 │  ├─ download_model.py  # 预下载 Embedding 模型
 │  └─ rag_smoke.py       # 单独验证 Chroma + CPU 向量检索
 ├─ data/
 │  ├─ docs/              # 你的个人文档（被 .gitignore 忽略）
 │  ├─ example/           # 公开示例文档（可提交）
-│  └─ runtime/chroma/    # 运行时向量库（被忽略，可重建）
+│  ├─ runtime/chroma/    # 运行时向量库（被忽略，可重建）
+│  └─ runtime/desk.db    # 工作台待办/日程/通知（被忽略）
 ├─ pack/
 │  ├─ example/           # 示例知识包
 │  └─ README.md          # 知识包格式说明
 ├─ tests/
 │  ├─ test_chunking.py   # 切块长度与稳定 ID 测试
 │  ├─ test_ingest.py     # 导入/更新/清理一致性测试
+│  ├─ test_desk_store.py # 工作台 SQLite 存储测试
+│  ├─ test_desk_timeparse.py # 自然语言时间解析测试
+│  ├─ test_desk_reminders.py # 提醒与简报逻辑测试
+│  ├─ test_desk_expert.py    # desk_expert 工具调用测试
 │  └─ test_chroma_integration.py # 真实 Chroma 导入集成测试
 ├─ test_run.py           # 路由 + 检索端到端演示
 ├─ test_memory.py        # 自动记忆写入/召回验证
@@ -200,6 +216,9 @@ cd D:\rag-agent-secretary
 | 直接输入问题 | 路由 → 检索知识库 → 回答 → 自动记忆 |
 | `记住：……` | 强调本轮信息必须写入长期记忆 |
 | `/mem` | 查看最近 20 条自动记忆 |
+| `/tasks` | 查看当前待办 |
+| `/agenda` | 查看今日安排与已过期未完成 |
+| `/done <id>` | 把指定任务标记为完成（id 可用 `/tasks` 查看） |
 | `/reset` | 清空当前对话上下文（长期记忆保留） |
 | `/help` | 显示帮助 |
 | `/exit` | 退出 |
@@ -231,6 +250,77 @@ cd D:\rag-agent-secretary
 聊天会把最近 20 条消息作为上下文，所以可以追问“再说简单点”，不用重复背景。
 对话上下文只存在进程内，退出后不会保留聊天记录；但**长期记忆会持久化到
 `data/runtime/chroma`**，下次启动仍然生效。
+
+## 工作台（待办/日程/提醒）
+
+工作台数据保存在本地 SQLite `data/runtime/desk.db`，由 `desk_expert` 和
+`scripts/desk.py` 共同读写。时间既支持 `2026-11-20 09:00` 这类绝对格式，
+也支持“明天下午3点”“下周一上午”这类自然语言。
+
+### 对话式
+
+直接对秘书说：
+
+```text
+你 > 提醒我明天下午3点交房租
+  [路由] desk_expert：涉及待办与提醒
+  [工具调用] add_task({'title': '交房租', 'due_at': '明天下午3点', ...})
+（desk_expert 已把任务写入 tasks 表，并返回任务 id）
+```
+
+“提醒我……”会自动落库；“今天还有什么安排”会走 `list_schedule`；
+“把刚那个任务标记完成”会走 `complete_task` 或 `update_task`。
+
+### CLI
+
+```powershell
+# 新增（--due 用 "YYYY-MM-DD HH:MM" 绝对格式；--remind 是提前分钟数，必须配合 --due）
+.\.venv\Scripts\python.exe scripts\desk.py add "交房租" --due "2026-11-20 09:00" --priority high --remind 60
+
+# 查看（默认只看未完成；--all 包含已完成，--query 模糊搜索）
+.\.venv\Scripts\python.exe scripts\desk.py list
+.\.venv\Scripts\python.exe scripts\desk.py list --all
+
+# 状态流转
+.\.venv\Scripts\python.exe scripts\desk.py done <id>
+.\.venv\Scripts\python.exe scripts\desk.py reopen <id>
+.\.venv\Scripts\python.exe scripts\desk.py cancel <id>
+
+# 删除：默认软删除（改为已取消），--hard 才真正删行
+.\.venv\Scripts\python.exe scripts\desk.py rm <id>
+.\.venv\Scripts\python.exe scripts\desk.py rm <id> --hard
+```
+
+`--db PATH` 可以写在子命令前后，默认使用 `data/runtime/desk.db`。
+
+### 提醒 daemon
+
+```powershell
+# 默认每 30 秒轮询一次，每天 08:00 发送简报
+.\.venv\Scripts\python.exe scripts\remind_daemon.py
+
+# 自定义间隔、简报时刻，或只跑一轮做验证
+.\.venv\Scripts\python.exe scripts\remind_daemon.py --interval 5
+.\.venv\Scripts\python.exe scripts\remind_daemon.py --briefing 08:30
+.\.venv\Scripts\python.exe scripts\remind_daemon.py --once
+```
+
+对应的环境变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `REMIND_INTERVAL_SECONDS` | `30` | 轮询间隔（秒），`--interval` 优先 |
+| `BRIEFING_TIME` | `08:00` | 每日简报时刻（HH:MM），`--briefing` 优先 |
+
+daemon 启动后会先补发已错过截止时间但尚未提醒的任务，之后到点打印提醒并写入
+`notifications` 表；每天只发一次简报，重启不会重复。
+
+### 三端查看
+
+- **命令行**：`chat.py` 内输入 `/tasks`（当前待办）、`/agenda`（今日安排 +
+  已过期未完成）、`/done <id>`（标记完成）。
+- **Web**：侧栏展开「工作台」，查看今日待办、未读通知，并可直接点“完成”。
+- **CLI**：`scripts/desk.py list` / `list --all`，适合脚本或批量处理。
 
 ## Web UI（推荐）
 
@@ -366,6 +456,8 @@ kb.delete_texts(ids=["doc-001"])
 | `HF_ENDPOINT` | `https://hf-mirror.com` | Hugging Face 镜像 |
 | `HF_HUB_OFFLINE` | 未设置 | 设为 `1` 后强制离线加载缓存 |
 | `TRANSFORMERS_OFFLINE` | 未设置 | 设为 `1` 后强制离线加载缓存 |
+| `BRIEFING_TIME` | `08:00` | 提醒 daemon 每日简报时刻（HH:MM） |
+| `REMIND_INTERVAL_SECONDS` | `30` | 提醒 daemon 轮询间隔（秒） |
 
 系统环境变量优先于 `.env`。代码在未设置 `HF_ENDPOINT` 时会自动回退到
 `https://hf-mirror.com`；如需官方源，显式设置：
@@ -444,12 +536,13 @@ $env:TRANSFORMERS_OFFLINE="1"
 
 ## 预期输出
 
-`test_run.py` 会依次问两个问题：
+`test_run.py` 会依次问三个问题：
 
 1. 高数极限 → `study_expert`
 2. 新手腹肌计划 → `life_expert`
+3. 提醒我明天下午3点交房租 → `desk_expert`
 
-默认使用临时知识库，所以可以放心反复运行；需要验证正式库时使用
+默认使用临时知识库和工作台数据库，所以可以放心反复运行；需要验证正式库时使用
 `test_run.py --live-kb`。每个问题会打印：
 
 ```text
@@ -462,10 +555,22 @@ $env:TRANSFORMERS_OFFLINE="1"
 [memory_curator] 写入/更新长期记忆：0 条
 ```
 
+工作台问题会多出 `desk_expert` 的工具调用与落库结果：
+
+```text
+[supervisor] -> desk_expert
+[desk_expert]
+  [工具调用] add_task({'title': '交房租', 'due_at': '明天下午3点', ...})
+  [工具结果] 已添加任务：a1b2c3d4... | 交房租 | 待办 | 截止 2026-11-19 15:00
+  [desk_expert] 已帮你记下：明天 15:00 交房租……
+[supervisor] -> FINISH
+[memory_curator] 写入/更新长期记忆：0 条
+```
+
 最后输出：
 
 ```text
-路由验证通过：两个问题分别到达 study_expert 和 life_expert。
+路由验证通过：三个问题分别到达 study_expert、life_expert 和 desk_expert。
 ```
 
 `test_memory.py` 会在临时知识库中写入几条带“记住”的个人信息，再验证它们能否被检索到：
@@ -486,7 +591,7 @@ DeepSeek 返回 JSON，再由 Pydantic 校验：
 
 ```python
 class RouteDecision(BaseModel):
-    next_agent: Literal["study_expert", "life_expert", "FINISH"]
+    next_agent: Literal["study_expert", "life_expert", "desk_expert", "FINISH"]
     reason: str
 ```
 
@@ -518,13 +623,25 @@ Worker 的 tool calling 不强制 `tool_choice`，不受这个限制影响。
 
 ## 如何扩展
 
-### 增加 Worker（例如 coding_expert）
+### 增加 Worker（已以 desk_expert 为例落地）
 
-1. 在 `secretary/prompts.py` 增加提示词。
-2. 在 `secretary/workers/` 新建类，继承 `WorkerAgent`。
-3. 在 `secretary/supervisor.py` 扩展 `RouteDecision` 的 `Literal`，在
-   `secretary/graph.py` 注册节点和条件边映射。
-4. 在 Supervisor 提示词中补充职责。
+`desk_expert` 就是按这套流程加进来的：新增 Worker 不只是写一个类，还要同步
+下面 5 处，否则路由、离线演示或端到端测试会缺一条链路。
+
+1. `secretary/state.py`：在 `RouteName` 的 `Literal` 中加入新节点名。
+2. `secretary/supervisor.py`：在 `RouteDecision.next_agent` 的 `Literal`
+   中加入同一个节点名。
+3. `secretary/prompts.py`：新增该 Worker 的系统提示词，并在
+   `SUPERVISOR_SYSTEM_PROMPT` 中补充职责和路由规则。
+4. `secretary/graph.py`：在 `WORKER_NODES`、`add_node`、条件边映射和
+   “回到 supervisor”的边里注册新节点；需要新工具时在 `secretary/tools/`
+   增加并在 `build_secretary_graph` 中注入。
+5. `secretary/demo_model.py`：补离线模式下的路由关键词和回复；
+   `test_run.py` 的 `QUESTIONS` 再加一个能命中新 Worker 的问题。
+
+新增 Worker 类本身放在 `secretary/workers/`，继承 `WorkerAgent` 即可。
+可对照 `desk_expert.py` / `desk_tools.py` / `DESK_EXPERT_PROMPT` /
+`graph.py` 中的注册代码，以及 `tests/test_desk_expert.py`。
 
 ### 扩展文档格式（PDF/Word/网页）
 
@@ -598,6 +715,7 @@ $env:HF_ENDPOINT="https://hf-mirror.com"
 
 ```text
 data/runtime/chroma/     # 向量库与自动记忆（可重建）
+data/runtime/desk.db     # 工作台待办/日程/通知（sqlite，本地数据）
 data/docs/               # 你的原始文档（导入时读取）
 ```
 
@@ -605,9 +723,11 @@ data/docs/               # 你的原始文档（导入时读取）
 
 ```powershell
 Remove-Item -Recurse -Force D:\rag-agent-secretary\data\runtime\chroma
+Remove-Item -Force D:\rag-agent-secretary\data\runtime\desk.db
 ```
 
-删除后重新执行 `scripts\ingest.py ingest` 即可从 `data/docs` 重建。
+删除后重新执行 `scripts\ingest.py ingest` 即可从 `data/docs` 重建向量库；
+工作台数据没有对应的文档来源，删除后无法自动恢复。
 正式使用后建议用 `scripts/kb.py delete <id>` 精确删除，避免误删资料。
 
 **导入后检索不到？**
@@ -633,7 +753,7 @@ Remove-Item -Recurse -Force D:\rag-agent-secretary\data\runtime\chroma
 | 路径 | 是否提交 | 说明 |
 | --- | --- | --- |
 | `data/docs/` | ❌ | 你的个人档案，已被 `.gitignore` 忽略 |
-| `data/runtime/` | ❌ | 向量库与记忆，可随时从文档重建 |
+| `data/runtime/` | ❌ | 向量库、长期记忆与工作台 `desk.db`，均为本地运行时数据 |
 | `.env` | ❌ | 含 API Key，`.env.example` 才是模板 |
 | `data/example/` | ✅ | 公开示例文档 |
 | `pack/example/` | ✅ | 公开示例知识包 |
