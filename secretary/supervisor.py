@@ -12,6 +12,7 @@ Pydantic 校验。这样既兼容思考模式，也保留了结构化路由的�
 from __future__ import annotations
 
 import json
+import logging
 from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
@@ -22,6 +23,8 @@ from .json_utils import extract_json_object
 from .message_utils import message_text, truncate
 from .prompts import SUPERVISOR_SYSTEM_PROMPT
 from .state import SecretaryState
+
+logger = logging.getLogger(__name__)
 
 ROUTE_FORMAT_INSTRUCTION = """\
 
@@ -82,22 +85,39 @@ class Supervisor:
     def __init__(self, llm: BaseChatModel) -> None:
         self._llm = llm
 
-    def __call__(self, state: SecretaryState) -> dict:
-        messages = list(state.get("messages", []))
-        transcript = render_transcript(messages)
+    def _invoke(self, transcript: str, *, retry: bool = False) -> str:
+        """请求一次路由结果；retry=True 时追加一次纠正说明。"""
 
-        # 把对话转成文本再交给路由模型：它只需要意图，不需要原始 ToolMessage 结构
+        prompt = f"下面是当前对话记录，请判断下一步节点。\n\n{transcript}"
+        if retry:
+            prompt += (
+                "\n\n注意：你上一次的输出不是合法的路由 JSON。"
+                "请只输出一个 JSON 对象，不要 Markdown 代码块或额外解释。"
+            )
+
         response = self._llm.invoke(
             [
                 SystemMessage(
                     content=SUPERVISOR_SYSTEM_PROMPT + ROUTE_FORMAT_INSTRUCTION
                 ),
-                HumanMessage(
-                    content=(f"下面是当前对话记录，请判断下一步节点。\n\n{transcript}")
-                ),
+                HumanMessage(content=prompt),
             ]
         )
-        decision = parse_route_decision(message_text(response))
+        return message_text(response)
+
+    def __call__(self, state: SecretaryState) -> dict:
+        messages = list(state.get("messages", []))
+        transcript = render_transcript(messages)
+
+        # 把对话转成文本再交给路由模型：它只需要意图，不需要原始 ToolMessage 结构
+        raw = self._invoke(transcript)
+        try:
+            decision = parse_route_decision(raw)
+        except ValueError as exc:
+            # 单次 JSON 输出失败不应该让整轮对话直接失败，给模型一次纠正机会。
+            logger.warning("Supervisor 路由 JSON 解析失败，重试一次：%s", exc)
+            raw = self._invoke(transcript, retry=True)
+            decision = parse_route_decision(raw)
 
         return {
             "next_agent": decision.next_agent,

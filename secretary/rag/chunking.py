@@ -57,12 +57,15 @@ def _split_long_text(text: str, max_chars: int, overlap: int) -> list[str]:
     if buffer:
         pieces.append(buffer)
 
-    # 简单重叠：把上一段末尾拼到下一段开头，减少跨段语义断裂
+    # 简单重叠：把上一段末尾拼到下一段开头，减少跨段语义断裂。
+    # 如果加上重叠后超过 max_chars，就放弃这一段的 overlap，避免片段超长被
+    # Embedding 模型截断。
     if overlap > 0 and len(pieces) > 1:
         merged = [pieces[0]]
-        for index in range(1, len(pieces)):
+        for piece in pieces[1:]:
             tail = merged[-1][-overlap:]
-            merged.append(f"{tail}\n{pieces[index]}")
+            candidate = f"{tail}\n{piece}"
+            merged.append(candidate if len(candidate) <= max_chars else piece)
         return merged
     return pieces
 

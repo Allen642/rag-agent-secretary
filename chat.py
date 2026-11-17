@@ -1,7 +1,7 @@
 """命令行聊天入口：连续对话 + 自动长期记忆。
 
 运行：
-    python chat.py              # 使用正式知识库 data/chroma
+    python chat.py              # 使用正式知识库 data/runtime/chroma
     python chat.py --temp-kb    # 使用临时知识库，退出即丢弃
     python chat.py --quiet      # 只显示最终回答，不显示路由/工具细节
 

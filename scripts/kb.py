@@ -8,6 +8,7 @@
 运行：
     python scripts/kb.py stats
     python scripts/kb.py list --source auto_memory
+    python scripts/kb.py list --source doc
     python scripts/kb.py search "我的健身习惯"
     python scripts/kb.py add "极限的 ε-N 定义是……" --topic 高数
     python scripts/kb.py delete memory-xxxxxxxx
@@ -63,8 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--offset", type=int, default=0)
     show.add_argument(
         "--source",
-        choices=["auto_memory", "manual"],
-        help="只看自动记忆或手动资料",
+        choices=["auto_memory", "manual", "doc"],
+        help="只看自动记忆、手动资料或导入文档",
     )
 
     delete = sub.add_parser("delete", help="按 ID 删除资料/记忆")
@@ -118,9 +119,11 @@ def main(argv: list[str] | None = None) -> int:
         total = kb.count()
         memories = kb.count(where={"source": "auto_memory"})
         manual = kb.count(where={"source": "manual"})
+        docs = kb.count(where={"source": "doc"})
         print(f"总条数：{total}")
         print(f"自动记忆：{memories} 条")
         print(f"手动资料：{manual} 条")
+        print(f"导入文档：{docs} 条")
         print(f"数据目录：{kb.persist_dir}")
         return 0
 

@@ -62,12 +62,16 @@ def main(argv: list[str] | None = None) -> int:
 
         if target.is_file():
             result = ingest_file(kb, target, topic=args.topic)
-            print(f"导入 1 个文件：{result.chunks} 段，跳过 {result.skipped} 段")
+            print(
+                f"导入 1 个文件：写入/更新 {result.chunks} 段，"
+                f"跳过 {result.skipped} 段，清理 {result.deleted} 段"
+            )
         elif target.is_dir():
             print(f"导入目录：{target}")
             result = ingest_dir(kb, target, topic=args.topic)
             print(
-                f"完成：{result.files} 个文件，{result.chunks} 段，跳过 {result.skipped} 段"
+                f"完成：{result.files} 个文件，写入/更新 {result.chunks} 段，"
+                f"跳过 {result.skipped} 段，清理 {result.deleted} 段"
             )
         else:
             print(f"路径不存在：{target}")
@@ -80,7 +84,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"导入知识包：{target}")
         result = ingest_pack(kb, target, topic=args.topic)
         print(
-            f"完成：{result.files} 个文件，{result.chunks} 段，跳过 {result.skipped} 段"
+            f"完成：{result.files} 个文件，写入/更新 {result.chunks} 段，"
+            f"跳过 {result.skipped} 段，清理 {result.deleted} 段"
         )
 
     elif args.command == "add-text":

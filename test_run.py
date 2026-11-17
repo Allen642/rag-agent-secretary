@@ -2,7 +2,7 @@
 
 真实模式（默认）：调用 DeepSeek，观察 Supervisor 如何把两个问题分别
 路由给 study_expert 和 life_expert，并在回答后自动判断是否写入长期记忆。
-默认使用临时知识库，不会污染正式 data/chroma；加 --live-kb 才使用正式库。
+默认使用临时知识库，不会污染正式 data/runtime/chroma；加 --live-kb 才使用正式库。
 
 离线模式（--offline）：使用确定性的 DemoChatModel，不访问网络，仅验证
 LangGraph 路由和工具调用骨架是否通畅（不写真实 Chroma）。
@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--live-kb",
         action="store_true",
-        help="使用正式 data/chroma；默认使用临时库，避免测试数据污染个人记忆",
+        help="使用正式 data/runtime/chroma；默认使用临时库，避免测试数据污染个人记忆",
     )
     args = parser.parse_args(argv)
 
@@ -140,7 +140,8 @@ def main(argv: list[str] | None = None) -> int:
 
     isolated_kb = args.offline or not args.live_kb
     print(
-        "知识库：" + ("临时（不会写入正式数据）" if isolated_kb else "正式 data/chroma")
+        "知识库："
+        + ("临时（不会写入正式数据）" if isolated_kb else "正式 data/runtime/chroma")
     )
 
     temp_context = (

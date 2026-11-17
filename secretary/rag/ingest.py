@@ -5,11 +5,13 @@
   * ``ingest_path``：导入 Markdown/TXT 文件或整个目录；
   * ``ingest_pack``：导入 .zip 知识包（先解压到临时目录再导入）。
 
-所有片段都使用稳定 ID，同一个文件重复导入会覆盖旧内容，不会重复堆积。
+所有片段都使用稳定 ID。重复导入同一个文件时，内容变化的片段会更新，
+已从文档中删除的小节会被清理，不会留下过期片段。
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import zipfile
@@ -21,7 +23,7 @@ from uuid import uuid4
 
 from ..config import get_settings
 from .chroma_store import ChromaKnowledgeBase
-from .chunking import DocumentChunk, chunk_markdown, is_supported_file
+from .chunking import chunk_markdown, is_supported_file
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,8 @@ class IngestReport:
     files: int = 0
     chunks: int = 0
     skipped: int = 0
+    # 重复导入时清理掉的过期片段数（删除的小节、缩短的正文等）
+    deleted: int = 0
 
 
 def _read_text(path: Path) -> str:
@@ -79,7 +83,12 @@ def ingest_text(
         raise ValueError("文本不能为空")
 
     now = datetime.now(UTC).isoformat()
-    metadata = {"source": source, "topic": topic, "updated_at": now}
+    metadata = {
+        "source": source,
+        "topic": topic,
+        "content_hash": _content_hash(cleaned),
+        "updated_at": now,
+    }
 
     if source == "doc":
         hits = kb.search(cleaned, k=1, where={"source": "doc"})
@@ -100,32 +109,10 @@ def ingest_text(
     return new_id
 
 
-def _existing_metadata(kb: ChromaKnowledgeBase, doc_id: str) -> dict | None:
-    """按 ID 查询已有片段的 metadata；没有则返回 None。"""
+def _content_hash(text: str) -> str:
+    """记录正文哈希，便于以后做增量导入和内容级去重。"""
 
-    metas = kb.get_metadatas([doc_id])
-    return metas[0] if metas and metas[0] else None
-
-
-def _same_chunk_exists(
-    kb: ChromaKnowledgeBase, chunk: DocumentChunk, *, topic: str
-) -> bool:
-    """判断该片段是否已经以相同主题和来源路径导入过。
-
-    稳定 ID 由“文件 + 小节 + 分片序号”决定，所以同一内容会命中同一个 ID；
-    只有主题或来源路径也一致时才跳过，方便改文件名/改主题后覆盖旧记录。
-    """
-
-    existing = _existing_metadata(kb, chunk.id)
-    if existing is None:
-        return False
-    existing_path = existing.get("source_path")
-    if existing_path is None:
-        # 旧版本写入的记录没有 source_path，按主题一致即可跳过
-        return existing.get("topic") == topic
-    return existing.get("topic") == topic and existing_path == chunk.metadata.get(
-        "source_path"
-    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def ingest_file(
@@ -141,29 +128,41 @@ def ingest_file(
     content = _read_text(path)
     base_root = root or path.parent
     resolved_topic = topic or _topic_for(path, base_root, "")
-
-    chunks = chunk_markdown(
-        content,
-        source_path=str(path.relative_to(base_root))
+    source_path = (
+        str(path.relative_to(base_root))
         if path.is_relative_to(base_root)
-        else path.name,
-        topic=resolved_topic,
+        else path.name
     )
+
+    chunks = chunk_markdown(content, source_path=source_path, topic=resolved_topic)
     if not chunks:
         report.skipped += 1
         return report
 
     report.files += 1
+    # 读取这个源文件此前导入的全部片段：用于判断内容是否变化，以及清理
+    # 已经从文档中删除的小节。
+    existing_items = kb.list_texts(limit=None, where={"source_path": source_path})
+    existing_by_id = {item.id: item for item in existing_items if item.id}
+    new_ids = {chunk.id for chunk in chunks}
+    now = datetime.now(UTC).isoformat()
+
     texts: list[str] = []
     metadatas: list[dict] = []
     ids: list[str] = []
-    now = datetime.now(UTC).isoformat()
 
     for chunk in chunks:
-        # 主题/源文件变了也算更新：允许改文件名、改主题后覆盖旧片段
-        if _same_chunk_exists(kb, chunk, topic=resolved_topic):
+        existing = existing_by_id.get(chunk.id)
+        unchanged = (
+            existing is not None
+            and existing.metadata.get("source") == "doc"
+            and existing.metadata.get("topic") == resolved_topic
+            and existing.text.strip() == chunk.text.strip()
+        )
+        if unchanged:
             report.skipped += 1
             continue
+
         texts.append(chunk.text)
         ids.append(chunk.id)
         metadatas.append(
@@ -171,14 +170,22 @@ def ingest_file(
                 "source": "doc",
                 "topic": resolved_topic,
                 "path": chunk.metadata.get("path", ""),
-                "source_path": chunk.metadata.get("source_path", path.name),
+                "source_path": chunk.metadata.get("source_path", source_path),
+                "content_hash": _content_hash(chunk.text),
                 "updated_at": now,
             }
         )
 
+    # 先写入新内容，再清理旧片段，避免中途失败导致资料丢失。
     if texts:
         kb.upsert_texts(texts, metadatas=metadatas, ids=ids)
         report.chunks = len(texts)
+
+    stale_ids = [doc_id for doc_id in existing_by_id if doc_id not in new_ids]
+    if stale_ids:
+        kb.delete_texts(ids=stale_ids)
+        report.deleted = len(stale_ids)
+
     return report
 
 
@@ -214,7 +221,11 @@ def ingest_dir(
         total.files += result.files
         total.chunks += result.chunks
         total.skipped += result.skipped
-        print(f"  {path.relative_to(directory)} -> {result.chunks} 段")
+        total.deleted += result.deleted
+        detail = f"  {path.relative_to(directory)} -> {result.chunks} 段"
+        if result.deleted:
+            detail += f"，清理 {result.deleted} 段"
+        print(detail)
     return total
 
 

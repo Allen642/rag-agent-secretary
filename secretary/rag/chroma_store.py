@@ -180,22 +180,28 @@ class ChromaKnowledgeBase:
     def list_texts(
         self,
         *,
-        limit: int = 20,
+        limit: int | None = 20,
         offset: int = 0,
         where: dict[str, Any] | None = None,
     ) -> list[RetrievedChunk]:
-        """按写入顺序列出文档，用于管理 CLI 查看/纠错。"""
+        """按写入顺序列出文档，用于管理 CLI 查看/纠错。
 
-        if limit <= 0:
-            raise ValueError("limit 必须大于 0")
+        ``limit=None`` 表示不限制条数，导入逻辑用它读取某个源文件的全部
+        旧片段，以便判断哪些内容需要更新或清理。
+        """
+
+        if limit is not None and limit <= 0:
+            raise ValueError("limit 必须大于 0，或传 None 表示不限制")
         if offset < 0:
             raise ValueError("offset 不能为负数")
 
         get_kwargs: dict[str, Any] = {
-            "limit": limit,
-            "offset": offset,
             "include": ["documents", "metadatas"],
         }
+        if limit is not None:
+            get_kwargs["limit"] = limit
+        if offset:
+            get_kwargs["offset"] = offset
         if where is not None:
             get_kwargs["where"] = where
 

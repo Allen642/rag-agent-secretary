@@ -43,7 +43,7 @@ supervisor ──(study_expert)──> study_expert ──┐
 ## 项目结构
 
 ```text
-rag/
+rag-agent-secretary/
 ├─ secretary/
 │  ├─ config.py          # .env、HF 镜像、路径、模型/Embedding 配置
 │  ├─ llm.py             # DeepSeek ChatOpenAI 初始化
@@ -79,11 +79,17 @@ rag/
 ├─ pack/
 │  ├─ example/           # 示例知识包
 │  └─ README.md          # 知识包格式说明
+├─ tests/
+│  ├─ test_chunking.py   # 切块长度与稳定 ID 测试
+│  ├─ test_ingest.py     # 导入/更新/清理一致性测试
+│  └─ test_chroma_integration.py # 真实 Chroma 导入集成测试
 ├─ test_run.py           # 路由 + 检索端到端演示
 ├─ test_memory.py        # 自动记忆写入/召回验证
 ├─ chat.py               # 命令行连续对话入口
 ├─ app.py                # Streamlit Web UI
 ├─ requirements.txt
+├─ requirements-dev.txt  # pytest 等开发依赖
+├─ pytest.ini
 ├─ .env.example
 └─ README.md
 ```
@@ -113,7 +119,9 @@ pack/你的知识包/       # 可打包、可迁移
 - 支持 `.md`、`.markdown`、`.txt`；
 - 按 Markdown 标题层级切块，每条片段带「主题｜标题路径」前缀，方便检索；
 - 子目录名会作为 `topic`，例如 `data/docs/高数/极限.md` 的主题是 `高数`；
-- 同一文件重复导入会覆盖旧片段（稳定 ID），不会重复堆积；
+- 同一文件重复导入会更新内容变化的片段，并清理已经从文档中删除的小节；
+- 重命名文件会被视为新文件，旧路径的片段不会自动删除；需要时用
+  `scripts/kb.py list --source doc` 找到旧 ID，再用 `delete` 清理；
 - 导入完成后用 `scripts/kb.py search "关键词"` 验证。
 
 ### 打包与迁移
@@ -133,9 +141,11 @@ pack/你的知识包/       # 可打包、可迁移
 
 ## 快速开始（Windows PowerShell）
 
-在项目目录 `F:\rag` 下执行：
+在项目根目录下执行（下面以 `D:\rag-agent-secretary` 为例，按你的实际路径调整）：
 
 ```powershell
+cd D:\rag-agent-secretary
+
 # 1. 创建虚拟环境
 python -m venv .venv
 
@@ -165,14 +175,21 @@ $env:HF_ENDPOINT="https://hf-mirror.com"
 
 # 8. 启动 Web UI
 .\.venv\Scripts\streamlit.exe run app.py
+
+# 9. 运行自动化测试（可选，先安装开发依赖）
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest
 ```
 
 如果虚拟环境已存在，可以跳过第 1、2 步。
 
+测试使用临时文件和内存假知识库，不会访问网络，也不会写入正式
+`data/runtime/chroma`。
+
 ## 日常使用：命令行聊天
 
 ```powershell
-cd F:\rag
+cd D:\rag-agent-secretary
 .\.venv\Scripts\python.exe chat.py
 ```
 
@@ -218,7 +235,7 @@ cd F:\rag
 ## Web UI（推荐）
 
 ```powershell
-cd F:\rag
+cd D:\rag-agent-secretary
 .\.venv\Scripts\streamlit.exe run app.py
 ```
 
@@ -298,6 +315,7 @@ Web UI 功能：
 ```powershell
 .\.venv\Scripts\python.exe scripts\kb.py stats
 .\.venv\Scripts\python.exe scripts\kb.py list --source auto_memory
+.\.venv\Scripts\python.exe scripts\kb.py list --source doc
 .\.venv\Scripts\python.exe scripts\kb.py search "我的健身习惯"
 .\.venv\Scripts\python.exe scripts\kb.py delete memory-xxxxxxxx
 ```
@@ -363,7 +381,7 @@ $env:HF_ENDPOINT="https://huggingface.co"
 ### 方式一：用项目脚本
 
 ```powershell
-cd F:\rag
+cd D:\rag-agent-secretary
 $env:HF_ENDPOINT="https://hf-mirror.com"
 .\.venv\Scripts\python.exe scripts\download_model.py
 ```
@@ -385,13 +403,13 @@ TRANSFORMERS_OFFLINE=1
 也可以把整个 `snapshots\<hash>` 目录复制到项目内，例如：
 
 ```powershell
-Copy-Item -Recurse "C:\Users\<你>\.cache\huggingface\hub\models--BAAI--bge-small-zh-v1.5\snapshots\<hash>" "F:\rag\models\bge-small-zh-v1.5"
+Copy-Item -Recurse "C:\Users\<你>\.cache\huggingface\hub\models--BAAI--bge-small-zh-v1.5\snapshots\<hash>" "D:\rag-agent-secretary\models\bge-small-zh-v1.5"
 ```
 
 然后：
 
 ```env
-EMBEDDING_MODEL=F:\rag\models\bge-small-zh-v1.5
+EMBEDDING_MODEL=D:\rag-agent-secretary\models\bge-small-zh-v1.5
 ```
 
 ### 方式二：用 Docker 预下载（需要 Docker Desktop）
@@ -504,21 +522,23 @@ Worker 的 tool calling 不强制 `tool_choice`，不受这个限制影响。
 
 1. 在 `secretary/prompts.py` 增加提示词。
 2. 在 `secretary/workers/` 新建类，继承 `WorkerAgent`。
-3. 在 `secretary/graph.py` 中注册节点、扩展 `RouteDecision` 的 `Literal`
-   和条件边映射。
+3. 在 `secretary/supervisor.py` 扩展 `RouteDecision` 的 `Literal`，在
+   `secretary/graph.py` 注册节点和条件边映射。
 4. 在 Supervisor 提示词中补充职责。
 
-### 导入 Markdown/PDF/网页资料
+### 扩展文档格式（PDF/Word/网页）
 
-当前 CLI 支持直接写文本。要做文件导入，可以在 `secretary/rag/` 增加
-`ingest.py`：读取文件 → 按标题/长度切块 → 计算稳定 ID → 调用 `upsert_texts`。
+当前内置导入支持 `.md`、`.markdown`、`.txt`，实现位于
+`secretary/rag/ingest.py`。要支持 PDF/Word/网页，可以新增解析函数，先把内容
+转成纯文本或 Markdown，再复用 `chunk_markdown` 和 `ingest_text` / `ingest_file`。
 Worker 和记忆层不需要改动。
 
-### 多轮对话入口
+### 接入新的对话前端
 
-当前 `test_run.py` / `test_memory.py` 每次调用都是独立一轮。图状态已经用
-`add_messages` 保存完整消息；后续增加 CLI/Web 时，把历史消息一起传入
-`graph.invoke` 即可。自动记忆每轮都会运行。
+`chat.py` 和 `app.py` 已经实现多轮对话：把最近 20 条历史消息传给
+`SecretaryAssistant.stream()` 或 `SecretaryAssistant.invoke()` 即可。自动记忆
+每轮都会运行。如果要接入其他前端，复用 `SecretaryAssistant`，不需要直接操作
+LangGraph 图。
 
 ## 常见问题
 
@@ -584,7 +604,7 @@ data/docs/               # 你的原始文档（导入时读取）
 测试阶段可以整体删除运行时数据：
 
 ```powershell
-Remove-Item -Recurse -Force F:\rag\data\runtime\chroma
+Remove-Item -Recurse -Force D:\rag-agent-secretary\data\runtime\chroma
 ```
 
 删除后重新执行 `scripts\ingest.py ingest` 即可从 `data/docs` 重建。
@@ -595,6 +615,16 @@ Remove-Item -Recurse -Force F:\rag\data\runtime\chroma
 1. 确认导入成功：`scripts\kb.py stats` 的总条数应大于 0；
 2. 直接检索测试：`scripts\kb.py search "文档里出现过的关键词"`；
 3. 余弦距离过大（> 0.65）的片段会被工具过滤，换更贴近文档原文的说法再问。
+
+**修改文档后重新导入会更新吗？**
+
+会。同一个 `source_path` 下，内容变化的片段会更新，已经从文档中删除的小节
+会被清理。重命名文件会被视为新文件，旧路径的片段需要手动删除：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\kb.py list --source doc
+.\.venv\Scripts\python.exe scripts\kb.py delete <旧片段 ID>
+```
 
 ## 发布到 GitHub
 
@@ -612,7 +642,7 @@ Remove-Item -Recurse -Force F:\rag\data\runtime\chroma
 首次上传：
 
 ```powershell
-cd F:\rag
+cd D:\rag-agent-secretary
 git init
 git add .
 git status          # 确认 data/docs、.env、data/runtime 没有出现在待提交列表

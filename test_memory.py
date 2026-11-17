@@ -3,7 +3,7 @@
 运行：
     python test_memory.py
 
-脚本使用临时 Chroma 目录，不会写入正式的 data/chroma。它会：
+脚本使用临时 Chroma 目录，不会写入正式的 data/runtime/chroma。它会：
   1. 说一句包含个人习惯和目标的话（带“记住”触发词）；
   2. 检查 memory_curator 是否写入 Chroma；
   3. 再问一个依赖该记忆的问题，观察 Worker 是否检索到；
@@ -105,7 +105,7 @@ def main() -> int:
             persist_dir=Path(temp_dir) / "chroma",
             collection_name="memory_demo",
         )
-        print("本次使用临时知识库，不会写入正式 data/chroma。\n")
+        print("本次使用临时知识库，不会写入正式 data/runtime/chroma。\n")
         return run_demo(kb)
 
 
