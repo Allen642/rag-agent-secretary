@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from secretary.config import get_settings, require_api_key
+from secretary.desk import local_day_bounds, to_local_iso
 from secretary.graph import WORKER_NODES, SecretaryAssistant
 from secretary.llm import build_chat_model
 from secretary.message_utils import content_to_text, message_text
@@ -135,6 +137,63 @@ def _memory_items(assistant: SecretaryAssistant) -> list[Any]:
     return items[:MAX_MEMORY_PREVIEW]
 
 
+_DESK_KIND_ICONS = {"briefing": "📰", "missed": "⏰", "remind": "🔔"}
+
+
+def _render_desk_panel(assistant: SecretaryAssistant) -> None:
+    """侧栏「工作台」：未读数、今日待办和最近通知，全部走 ``desk_store``。
+
+    Streamlit 不会自动感知 sqlite 的变化，所有写操作（完成/已读）后都显式
+    ``st.rerun()``，让侧栏与主界面拿到最新数据。
+    """
+
+    store = assistant.desk_store
+    now_ts = int(time.time())
+    day_start, day_end = local_day_bounds(now_ts)
+    today = store.list_between(day_start, day_end)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("未读通知", store.count_unread_notifications())
+    with col2:
+        st.metric("今日待办", len(today))
+
+    if st.button("🔄 刷新工作台", key="refresh_desk", use_container_width=True):
+        st.rerun()
+
+    st.markdown("**📅 今日待办**")
+    if not today:
+        st.caption("今日暂无安排。")
+    for task in today:
+        info, action = st.columns([4, 1])
+        with info:
+            st.markdown(f"**{task.title}**")
+            st.caption(f"截止 {to_local_iso(task.due_ts) or '-'}")
+        with action:
+            if st.button(
+                "完成", key=f"desk_done_{task.id}", use_container_width=True
+            ):
+                store.complete_task(task.id)
+                st.rerun()
+
+    st.markdown("**🔔 最近通知**")
+    notifications = store.list_notifications(limit=20)
+    if not notifications:
+        st.caption("暂无通知。")
+    for note in notifications:
+        icon = _DESK_KIND_ICONS.get(note.kind, "🔔")
+        unread = " · 未读" if note.read_ts is None else ""
+        st.markdown(f"{icon} **{note.title}**")
+        st.caption(f"{note.created_at}{unread}")
+        if note.body:
+            st.text(note.body)
+        if note.read_ts is None and st.button(
+            "标记已读", key=f"desk_read_{note.id}", use_container_width=True
+        ):
+            store.mark_notification_read(note.id)
+            st.rerun()
+
+
 def _render_sidebar(assistant: SecretaryAssistant) -> None:
     settings = get_settings()
     with st.sidebar:
@@ -174,6 +233,9 @@ def _render_sidebar(assistant: SecretaryAssistant) -> None:
                     st.markdown(f"**{topic}**")
                     st.markdown(item.text)
                     st.caption(f"id = {item.id} · {updated}")
+
+        with st.expander("🗂 工作台", expanded=False):
+            _render_desk_panel(assistant)
 
         st.divider()
         st.caption(

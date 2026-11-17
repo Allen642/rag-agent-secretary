@@ -42,10 +42,16 @@ _COLUMNS = (
 
 _NOTIFICATION_COLUMNS = "id, task_id, kind, title, body, due_ts, created_ts, read_ts"
 
-# 通知类型：remind 是正常提醒，missed 是 daemon 启动时合并补发的错过提醒
-NOTIFICATION_KINDS: tuple[str, ...] = ("remind", "missed")
+# 通知类型：remind 是正常提醒，missed 是 daemon 启动时合并补发的错过提醒，
+# briefing 是每天定时生成的主动简报
+NOTIFICATION_KINDS: tuple[str, ...] = ("remind", "missed", "briefing")
 
-_SCHEMA_STATEMENTS: tuple[str, ...] = (
+# schema 版本：v3 允许 notifications.kind = 'briefing'
+SCHEMA_VERSION = 3
+
+# 表结构。notifications 的 CHECK 约束写死 kind 取值，老库升级见
+# :meth:`DeskStore._rebuild_notifications_if_needed`。
+_TABLE_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS tasks (
         id             TEXT PRIMARY KEY,
@@ -65,13 +71,12 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         reminded_ts    INTEGER
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_tasks_status_due ON tasks(status, due_ts)",
-    "CREATE INDEX IF NOT EXISTS idx_tasks_dedupe ON tasks(dedupe_key, status)",
     """
     CREATE TABLE IF NOT EXISTS notifications (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         task_id    TEXT,
-        kind       TEXT NOT NULL CHECK (kind IN ('remind', 'missed')),
+        kind       TEXT NOT NULL
+                   CHECK (kind IN ('remind', 'missed', 'briefing')),
         title      TEXT NOT NULL,
         body       TEXT NOT NULL DEFAULT '',
         due_ts     INTEGER,
@@ -79,6 +84,11 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         read_ts    INTEGER
     )
     """,
+)
+
+_INDEX_STATEMENTS: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS idx_tasks_status_due ON tasks(status, due_ts)",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_dedupe ON tasks(dedupe_key, status)",
     """
     CREATE INDEX IF NOT EXISTS idx_notifications_unread
         ON notifications(read_ts, created_ts, id)
@@ -307,13 +317,54 @@ class DeskStore:
             conn.execute("COMMIT")
 
     def _init_schema(self) -> None:
-        """建表/建索引；幂等，多次构造不会丢数据。"""
+        """建表/建索引并升级老库；幂等，多次构造不会丢数据。"""
 
         with self._write() as conn:
-            for statement in _SCHEMA_STATEMENTS:
+            for statement in _TABLE_STATEMENTS:
                 conn.execute(statement)
-            # schema 版本：v2 新增 notifications 表（提醒/补发记录）
-            conn.execute("PRAGMA user_version = 2")
+            # v3 之前 notifications.kind 的 CHECK 不含 briefing，需要重建表
+            self._rebuild_notifications_if_needed(conn)
+            for statement in _INDEX_STATEMENTS:
+                conn.execute(statement)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    @staticmethod
+    def _rebuild_notifications_if_needed(conn: sqlite3.Connection) -> None:
+        """把 v2 的 notifications 表升级成允许 ``briefing`` 的新表。
+
+        SQLite 不能直接修改 CHECK 约束，只能建新表、搬数据、删旧表。旧库
+        里只有 ``remind``/``missed`` 两种 kind，全部满足新约束，不会丢行。
+        """
+
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
+        ).fetchone()
+        if row is None or "briefing" in (row["sql"] or ""):
+            return
+
+        conn.execute("ALTER TABLE notifications RENAME TO notifications_v2")
+        conn.execute(
+            """
+            CREATE TABLE notifications (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id    TEXT,
+                kind       TEXT NOT NULL
+                           CHECK (kind IN ('remind', 'missed', 'briefing')),
+                title      TEXT NOT NULL,
+                body       TEXT NOT NULL DEFAULT '',
+                due_ts     INTEGER,
+                created_ts INTEGER NOT NULL,
+                read_ts    INTEGER
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO notifications "
+            "(id, task_id, kind, title, body, due_ts, created_ts, read_ts) "
+            "SELECT id, task_id, kind, title, body, due_ts, created_ts, read_ts "
+            "FROM notifications_v2"
+        )
+        conn.execute("DROP TABLE notifications_v2")
 
     # ------------------------------------------------------------------ 读取
 
@@ -412,6 +463,59 @@ class DeskStore:
             rows = conn.execute(sql, (now_ts,)).fetchall()
         return [_row_to_task(row) for row in rows]
 
+    def list_between(
+        self, start_ts: int, end_ts: int, *, include_done: bool = False
+    ) -> list[Task]:
+        """列出截止时间落在 ``[start_ts, end_ts)`` 内的任务。
+
+        默认只看 ``open``；``include_done=True`` 时连带 ``done``，已取消
+        （软删除）的任务永远不出现。没有截止时间的任务不参与时间范围过滤。
+        结果按 ``due_ts`` 升序，方便直接拼成「今天/本周的安排」简报。
+        """
+
+        start_ts = _require_ts(start_ts, field="start_ts")
+        end_ts = _require_ts(end_ts, field="end_ts")
+        if start_ts > end_ts:
+            raise ValueError("start_ts 不能大于 end_ts")
+
+        statuses = ("open", "done") if include_done else ("open",)
+        placeholders = ", ".join("?" for _ in statuses)
+        sql = (
+            f"SELECT {_COLUMNS} FROM tasks "
+            f"WHERE status IN ({placeholders}) "
+            "AND due_ts IS NOT NULL "
+            "AND due_ts >= ? AND due_ts < ? "
+            "ORDER BY due_ts ASC, created_ts ASC, id ASC"
+        )
+        params: list[Any] = [*statuses, start_ts, end_ts]
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_task(row) for row in rows]
+
+    def list_overdue(
+        self, now_ts: int, *, include_done: bool = False
+    ) -> list[Task]:
+        """列出已过截止时间且仍未完成的任务（简报的「欠账」部分）。
+
+        ``due_ts < now_ts`` 才算过期；默认只看 ``open``，
+        ``include_done=True`` 时连带已完成的过期任务。结果按 ``due_ts`` 升序。
+        """
+
+        now_ts = _require_ts(now_ts, field="now_ts")
+        statuses = ("open", "done") if include_done else ("open",)
+        placeholders = ", ".join("?" for _ in statuses)
+        sql = (
+            f"SELECT {_COLUMNS} FROM tasks "
+            f"WHERE status IN ({placeholders}) "
+            "AND due_ts IS NOT NULL "
+            "AND due_ts < ? "
+            "ORDER BY due_ts ASC, created_ts ASC, id ASC"
+        )
+        params: list[Any] = [*statuses, now_ts]
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_task(row) for row in rows]
+
     def list_notifications(
         self, *, unread_only: bool = False, limit: int = 50
     ) -> list[Notification]:
@@ -440,6 +544,21 @@ class DeskStore:
                 "SELECT COUNT(*) FROM notifications WHERE read_ts IS NULL"
             ).fetchone()
         return int(row[0])
+
+    def has_briefing_since(self, day_start_ts: int) -> bool:
+        """``day_start_ts`` 之后是否已经发过简报，用于「每天只发一次」去重。
+
+        只关心 ``kind='briefing'``；daemon 重启后仍然命中，因此不会重复推送。
+        """
+
+        day_start_ts = _require_ts(day_start_ts, field="day_start_ts")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM notifications "
+                "WHERE kind = 'briefing' AND created_ts >= ? LIMIT 1",
+                (day_start_ts,),
+            ).fetchone()
+        return row is not None
 
     # ------------------------------------------------------------------ 写入
 

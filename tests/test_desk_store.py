@@ -128,6 +128,79 @@ def test_list_tasks_rejects_non_string_query(store: DeskStore) -> None:
         store.list_tasks(query=123)  # type: ignore[arg-type]
 
 
+def test_list_between_boundaries_and_order(store: DeskStore) -> None:
+    store.add_task("之前", due_at="2026-11-20 08:59")
+    store.add_task("正好起点", due_at="2026-11-20 09:00")
+    store.add_task("中间", due_at="2026-11-20 12:00")
+    store.add_task("正好终点前", due_at="2026-11-20 17:59")
+    store.add_task("正好终点", due_at="2026-11-20 18:00")
+    store.add_task("没有截止时间")
+
+    start = int(datetime(2026, 11, 20, 9, 0).timestamp())
+    end = int(datetime(2026, 11, 20, 18, 0).timestamp())
+
+    tasks = store.list_between(start, end)
+
+    # 含左、不含右；无截止时间不参与；按 due_ts 升序
+    assert [task.title for task in tasks] == ["正好起点", "中间", "正好终点前"]
+    assert store.list_between(start, start) == []
+
+
+def test_list_between_include_done_and_excludes_cancelled(store: DeskStore) -> None:
+    open_task, _ = store.add_task("待办", due_at="2026-11-20 10:00")
+    done_task, _ = store.add_task("已完成", due_at="2026-11-20 11:00")
+    cancelled_task, _ = store.add_task("已取消", due_at="2026-11-20 12:00")
+    store.complete_task(done_task.id)
+    store.cancel_task(cancelled_task.id)
+
+    start = int(datetime(2026, 11, 20, 0, 0).timestamp())
+    end = int(datetime(2026, 11, 21, 0, 0).timestamp())
+
+    assert [task.id for task in store.list_between(start, end)] == [open_task.id]
+    assert [task.id for task in store.list_between(start, end, include_done=True)] == [
+        open_task.id,
+        done_task.id,
+    ]
+
+
+def test_list_between_rejects_invalid_range(store: DeskStore) -> None:
+    start = int(datetime(2026, 11, 20, 9, 0).timestamp())
+    end = int(datetime(2026, 11, 20, 18, 0).timestamp())
+
+    with pytest.raises(ValueError):
+        store.list_between(end, start)
+    with pytest.raises(ValueError):
+        store.list_between("1800000000", end)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        store.list_between(start, True)  # type: ignore[arg-type]
+
+
+def test_list_overdue_filters_and_orders(store: DeskStore) -> None:
+    store.add_task("更早过期", due_at="2026-11-19 09:00")
+    store.add_task("过期", due_at="2026-11-20 09:00")
+    store.add_task("正好现在", due_at="2026-11-20 12:00")
+    store.add_task("未来", due_at="2026-11-20 18:00")
+    store.add_task("没有截止时间")
+    done, _ = store.add_task("已完成但过期", due_at="2026-11-18 09:00")
+    store.complete_task(done.id)
+
+    now = int(datetime(2026, 11, 20, 12, 0).timestamp())
+
+    assert [task.title for task in store.list_overdue(now)] == ["更早过期", "过期"]
+    assert [task.title for task in store.list_overdue(now, include_done=True)] == [
+        "已完成但过期",
+        "更早过期",
+        "过期",
+    ]
+
+
+def test_list_overdue_validates_now_ts(store: DeskStore) -> None:
+    with pytest.raises(ValueError):
+        store.list_overdue("1800000000")  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        store.list_overdue(True)  # type: ignore[arg-type]
+
+
 def test_complete_reopen_cancel_transitions(store: DeskStore) -> None:
     task, _ = store.add_task("写周报", due_at="2026-11-20 09:00")
 

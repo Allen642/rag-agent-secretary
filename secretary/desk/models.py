@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 # 状态与优先级的唯一事实来源，store 校验和 CLI 展示都引用这里
@@ -112,6 +112,15 @@ def to_local_iso(ts: int | None) -> str | None:
     if moment is None:
         return None
     return moment.isoformat(sep=" ", timespec="seconds")
+
+
+def local_day_bounds(ts: int) -> tuple[int, int]:
+    """返回 ``ts`` 所在本地自然日的 ``[今天 00:00, 明天 00:00)``（epoch 秒）。"""
+
+    start = datetime.fromtimestamp(ts).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return int(start.timestamp()), int((start + timedelta(days=1)).timestamp())
 
 
 def is_date_only(value: object) -> bool:

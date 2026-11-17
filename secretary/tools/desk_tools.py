@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime
 
@@ -29,6 +30,18 @@ DESK_TOOL_NAMES: tuple[str, ...] = (
     "cancel_task",
     "list_tasks",
     "list_due",
+    "list_schedule",
+)
+
+# 「只有日期、没有具体时刻」的自然语言写法；这类端点对齐到整天，
+# 避免 parse_natural 的 18:00 默认值把「今天」理解成「今天 18 点以后」。
+_DATE_ONLY_EXPR_RE = re.compile(
+    r"(?:"
+    r"\d{4}-\d{1,2}-\d{1,2}"
+    r"|今天|今日|明天|明日|后天|大后天|昨天|前天"
+    r"|(?:(?:下下|下|本|这|上)(?:个)?)?(?:周|星期|礼拜)[一二三四五六日天]"
+    r"|\d{1,2}月\d{1,2}[日号]"
+    r")"
 )
 
 
@@ -65,8 +78,23 @@ def _format_task_list(tasks: list[Task], heading: str) -> str:
     return "\n".join(lines)
 
 
+def _schedule_bound(text: str) -> int:
+    """把日程查询的端点解析成 epoch 秒。
+
+    日期写法（「今天」「下周一」「2026-11-20」等）统一对齐到当天 00:00，
+    与 ``list_between`` 的 ``[start, end)`` 语义一致：终点写「明天」表示
+    「到明天 00:00 为止（不含）」，因此「今天」到「明天」正好覆盖今天一整天。
+    带具体时刻的写法（「今天下午3点」）则保留解析出的准确时间。
+    """
+
+    moment = parse_natural(text)
+    if _DATE_ONLY_EXPR_RE.fullmatch(text.strip()):
+        moment = datetime.combine(moment.date(), datetime.min.time())
+    return int(moment.timestamp())
+
+
 def make_desk_tools(store: DeskStore) -> list[BaseTool]:
-    """绑定指定 ``DeskStore``，返回 7 个工作台工具。"""
+    """绑定指定 ``DeskStore``，返回 8 个工作台工具。"""
 
     @tool("add_task", parse_docstring=True)
     def add_task(
@@ -241,6 +269,29 @@ def make_desk_tools(store: DeskStore) -> list[BaseTool]:
         tasks = store.list_due(int(time.time()))
         return _format_task_list(tasks, "到提醒时间的任务")
 
+    @tool("list_schedule", parse_docstring=True)
+    def list_schedule(start_at: str, end_at: str) -> str:
+        """查询某个时间范围内的待办和日程，适合回答「今天/本周有什么安排」。
+
+        Args:
+            start_at: 范围起点，支持自然语言，例如「今天」「明天」「下周一」
+                或「2026-11-20 09:00」；只写日期时从当天 00:00 开始。
+            end_at: 范围终点，写法同 start_at，不包含该时刻；只写日期时
+                表示当天 00:00，因此「今天」到「明天」正好覆盖今天一整天。
+
+        Returns:
+            带序号的日程列表；范围内没有任务时返回「暂无任务」。
+        """
+
+        try:
+            tasks = store.list_between(
+                _schedule_bound(start_at), _schedule_bound(end_at)
+            )
+        except ValueError as exc:
+            return f"查询失败：{exc}"
+        heading = f"{start_at.strip()} 至 {end_at.strip()} 的安排"
+        return _format_task_list(tasks, heading)
+
     return [
         add_task,
         update_task,
@@ -249,4 +300,5 @@ def make_desk_tools(store: DeskStore) -> list[BaseTool]:
         cancel_task,
         list_tasks,
         list_due,
+        list_schedule,
     ]

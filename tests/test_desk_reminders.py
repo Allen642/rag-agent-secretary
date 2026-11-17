@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -160,6 +161,42 @@ def test_notifications_survive_restart(tmp_path) -> None:
     assert [item.id for item in second.list_unread_notifications()] == [created.id]
 
 
+def test_old_notifications_table_is_upgraded_for_briefing(tmp_path) -> None:
+    """v2 的 CHECK 约束不含 briefing，打开老库时应自动重建表且保留旧数据。"""
+
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE notifications (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id    TEXT,
+            kind       TEXT NOT NULL CHECK (kind IN ('remind', 'missed')),
+            title      TEXT NOT NULL,
+            body       TEXT NOT NULL DEFAULT '',
+            due_ts     INTEGER,
+            created_ts INTEGER NOT NULL,
+            read_ts    INTEGER
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO notifications (kind, title, created_ts) VALUES (?, ?, ?)",
+        ("remind", "老通知", _ts(7, 0)),
+    )
+    conn.commit()
+    conn.close()
+
+    store = DeskStore(db_path)
+    briefing = store.add_notification(
+        kind="briefing", title="今日简报", created_ts=_ts(8, 0)
+    )
+
+    assert briefing.kind == "briefing"
+    titles = [item.title for item in store.list_notifications()]
+    assert titles == ["今日简报", "老通知"]
+
+
 # ------------------------------------------------------------------- _tick
 
 
@@ -241,6 +278,77 @@ def test_startup_catch_up_keeps_future_due_as_normal_reminder(
     assert store.get_task(upcoming.id).reminded_ts == now_ts
 
 
+# ----------------------------------------------------------------- briefing
+
+
+def test_has_briefing_since_dedupes_per_day(store: DeskStore) -> None:
+    day_start = _ts(0, 0)
+    assert store.has_briefing_since(day_start) is False
+
+    store.add_notification(
+        kind="briefing", title="今日简报", body="今日暂无安排。", created_ts=_ts(8, 0)
+    )
+
+    assert store.has_briefing_since(day_start) is True
+    # 第二天重新开始，不受前一天影响
+    assert store.has_briefing_since(_ts(0, 0, day=19)) is False
+    # 其它 kind 不算简报
+    store.add_notification(kind="remind", title="普通提醒", created_ts=_ts(9, 0))
+    assert store.has_briefing_since(_ts(0, 0, day=19)) is False
+
+
+def test_has_briefing_since_validates_ts(store: DeskStore) -> None:
+    with pytest.raises(ValueError):
+        store.has_briefing_since(-1)
+    with pytest.raises(ValueError):
+        store.has_briefing_since(True)  # type: ignore[arg-type]
+
+
+def test_build_briefing_text_includes_today_and_overdue(store: DeskStore) -> None:
+    store.add_task("今天交房租", due_at=datetime(2026, 11, 18, 15, 0))
+    store.add_task("昨天写周报", due_at=datetime(2026, 11, 17, 9, 0))
+
+    text = remind_daemon.build_briefing_text(store, _ts(9, 0))
+
+    assert "今日待办" in text
+    assert "今天交房租" in text
+    assert "2026-11-18 15:00:00" in text
+    assert "已过期未完成" in text
+    assert "昨天写周报" in text
+
+
+def test_build_briefing_text_empty_store(store: DeskStore) -> None:
+    text = remind_daemon.build_briefing_text(store, _ts(9, 0))
+
+    assert "今日暂无安排" in text
+    assert "已过期未完成" not in text
+
+
+def test_maybe_send_briefing_once_per_day(store: DeskStore, capsys) -> None:
+    store.add_task("今天开会", due_at=datetime(2026, 11, 18, 15, 0))
+
+    # 还没到时刻：不发
+    assert remind_daemon.maybe_send_briefing(store, _ts(7, 59)) is False
+    assert store.list_notifications() == []
+
+    assert remind_daemon.maybe_send_briefing(store, _ts(8, 0)) is True
+    briefings = [item for item in store.list_notifications() if item.kind == "briefing"]
+    assert len(briefings) == 1
+    assert briefings[0].title == "今日简报（2026-11-18）"
+    assert "今天开会" in briefings[0].body
+    assert "[简报] 今日简报（2026-11-18）" in capsys.readouterr().out
+
+    # 同一天再调用：去重，不再写也不打印
+    assert remind_daemon.maybe_send_briefing(store, _ts(9, 0)) is False
+    assert capsys.readouterr().out == ""
+    assert store.count_unread_notifications() == 1
+
+    # 第二天到点后重新发一条
+    assert remind_daemon.maybe_send_briefing(store, _ts(8, 0, day=19)) is True
+    briefings = [item for item in store.list_notifications() if item.kind == "briefing"]
+    assert len(briefings) == 2
+
+
 # --------------------------------------------------------------------- main
 
 
@@ -257,13 +365,47 @@ def test_main_once_writes_missed_and_restart_does_not_repeat(
     assert remind_daemon.main(["--db", str(db_path), "--once"]) == 0
     first_output = capsys.readouterr().out
     assert "错过的提醒（1 条）" in first_output
-    assert store.count_unread_notifications() == 1
+
+    def missed_count() -> int:
+        # 默认简报时刻可能已过，这里只关心 missed 通知
+        return len(
+            [item for item in store.list_notifications() if item.kind == "missed"]
+        )
+
+    assert missed_count() == 1
 
     # 模拟重启：同样的库再跑一次，不应重复弹
     assert remind_daemon.main(["--db", str(db_path), "--once"]) == 0
     second_output = capsys.readouterr().out
     assert "错过的提醒" not in second_output
-    assert store.count_unread_notifications() == 1
+    assert missed_count() == 1
+
+
+def test_main_once_sends_briefing_only_once(tmp_path, capsys) -> None:
+    db_path = tmp_path / "briefing.db"
+    store = DeskStore(db_path)
+    store.add_task("今天整理桌面", due_at=datetime.now())
+
+    args = ["--db", str(db_path), "--once", "--briefing", "00:00"]
+    assert remind_daemon.main(args) == 0
+    assert "[简报]" in capsys.readouterr().out
+
+    briefings = [item for item in store.list_notifications() if item.kind == "briefing"]
+    assert len(briefings) == 1
+    assert "今天整理桌面" in briefings[0].body
+
+    # 再跑一次（模拟重启）：当天已有 briefing，不重复写
+    assert remind_daemon.main(args) == 0
+    assert "[简报]" not in capsys.readouterr().out
+    remaining = [
+        item for item in store.list_notifications() if item.kind == "briefing"
+    ]
+    assert len(remaining) == 1
+
+
+def test_main_rejects_invalid_briefing_time(capsys) -> None:
+    assert remind_daemon.main(["--briefing", "8点", "--once"]) == 1
+    assert "HH:MM" in capsys.readouterr().err
 
 
 def test_main_rejects_non_positive_interval(tmp_path, capsys) -> None:

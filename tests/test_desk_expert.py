@@ -29,11 +29,28 @@ def desk_tools(store: DeskStore):
     return {tool_item.name: tool_item for tool_item in make_desk_tools(store)}
 
 
-def test_make_desk_tools_returns_seven_named_tools(store: DeskStore) -> None:
+def test_make_desk_tools_returns_eight_named_tools(store: DeskStore) -> None:
     tools = make_desk_tools(store)
 
-    assert len(tools) == 7
+    assert len(tools) == 8
     assert [item.name for item in tools] == list(DESK_TOOL_NAMES)
+
+
+def test_list_schedule_covers_whole_day(store: DeskStore, desk_tools) -> None:
+    store.add_task("上午任务", due_at="2026-11-20 09:00")
+    store.add_task("晚上任务", due_at="2026-11-20 20:00")
+    store.add_task("第二天任务", due_at="2026-11-21 09:00")
+    store.add_task("范围外任务", due_at="2026-11-19 09:00")
+
+    result = desk_tools["list_schedule"].invoke(
+        {"start_at": "2026-11-20", "end_at": "2026-11-21"}
+    )
+
+    assert "上午任务" in result
+    assert "晚上任务" in result
+    assert "第二天任务" not in result
+    assert "范围外任务" not in result
+    assert "共 2 条" in result
 
 
 def test_add_task_parses_natural_due_at(store: DeskStore, desk_tools) -> None:

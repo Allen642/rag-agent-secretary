@@ -6,16 +6,20 @@
     python chat.py --quiet      # 只显示最终回答，不显示路由/工具细节
 
 对话中的特殊命令：
-    /exit   退出
-    /reset  清空当前对话上下文（不删除长期记忆）
-    /mem    查看最近写入的长期记忆
-    /help   显示帮助
+    /exit         退出
+    /reset        清空当前对话上下文（不删除长期记忆）
+    /mem          查看最近写入的长期记忆
+    /tasks        查看当前待办
+    /agenda       查看今日安排与已过期未完成
+    /done <id>    把指定任务标记为完成
+    /help         显示帮助
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,6 +27,7 @@ from tempfile import TemporaryDirectory
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from secretary.config import get_settings, require_api_key
+from secretary.desk import PRIORITY_LABELS, local_day_bounds, to_local_iso
 from secretary.graph import WORKER_NODES, SecretaryAssistant, extract_final_answer
 from secretary.llm import build_chat_model
 from secretary.message_utils import message_text, truncate
@@ -33,10 +38,13 @@ EXIT_COMMANDS = {"/exit", "/quit", "exit", "quit", "退出", "再见"}
 
 HELP_TEXT = """\
 可用命令：
-  /exit   退出对话
-  /reset  清空当前上下文（长期记忆保留）
-  /mem    查看最近写入的长期记忆
-  /help   显示帮助
+  /exit        退出对话
+  /reset       清空当前上下文（长期记忆保留）
+  /mem         查看最近写入的长期记忆
+  /tasks       查看当前待办
+  /agenda      查看今日安排与已过期未完成
+  /done <id>   把指定任务标记为完成（id 可用 /tasks 查看）
+  /help        显示帮助
 
 直接输入问题即可；想说“记住……”时它会自动写入长期记忆。
 """
@@ -177,6 +185,18 @@ def chat_loop(assistant: SecretaryAssistant, *, verbose: bool, color: bool) -> i
             _print_memories(assistant, painter)
             continue
 
+        if question == "/tasks":
+            _print_tasks(assistant, painter)
+            continue
+
+        if question == "/agenda":
+            _print_agenda(assistant, painter)
+            continue
+
+        if question == "/done" or question.startswith("/done "):
+            _complete_task(assistant, question, painter)
+            continue
+
         try:
             new_messages = run_turn(
                 assistant, question, history, painter, verbose=verbose
@@ -215,6 +235,68 @@ def _print_memories(assistant: SecretaryAssistant, painter: _Painter) -> None:
         topic = memory.metadata.get("topic", "个人")
         print(f"  - [{topic}] {memory.text}")
         print(painter.dim(f"    id={memory.id}"))
+
+
+def _print_tasks(assistant: SecretaryAssistant, painter: _Painter) -> None:
+    """打印当前未完成的待办（默认排除已完成和已取消）。"""
+
+    tasks = assistant.desk_store.list_tasks()
+    if not tasks:
+        print(painter.dim("当前没有待办。"))
+        return
+
+    print(painter.cyan(f"待办（{len(tasks)} 条）："))
+    for task in tasks:
+        due = to_local_iso(task.due_ts) or "无截止时间"
+        priority = PRIORITY_LABELS.get(task.priority, task.priority)
+        print(f"  - {task.title}（截止 {due} · 优先级 {priority}）")
+        print(painter.dim(f"    id={task.id}"))
+
+
+def _print_agenda(assistant: SecretaryAssistant, painter: _Painter) -> None:
+    """打印今日安排与已过期未完成；今天更早的过期任务只在今日安排里出现一次。"""
+
+    now_ts = int(time.time())
+    day_start, day_end = local_day_bounds(now_ts)
+    store = assistant.desk_store
+    today = store.list_between(day_start, day_end)
+    today_ids = {task.id for task in today}
+    overdue = [task for task in store.list_overdue(now_ts) if task.id not in today_ids]
+
+    print(painter.cyan(f"今日安排（{len(today)} 条）："))
+    if not today:
+        print(painter.dim("  暂无安排。"))
+    for task in today:
+        due = to_local_iso(task.due_ts) or "-"
+        print(f"  - {task.title}（截止 {due}）")
+
+    print(painter.cyan(f"已过期未完成（{len(overdue)} 条）："))
+    if not overdue:
+        print(painter.dim("  没有欠账。"))
+    for task in overdue:
+        due = to_local_iso(task.due_ts) or "-"
+        print(f"  - {task.title}（截止 {due}）")
+
+
+def _complete_task(
+    assistant: SecretaryAssistant, question: str, painter: _Painter
+) -> None:
+    """处理 ``/done <id>``：成功回显标题，出错只提示不退出聊天。"""
+
+    parts = question.split(maxsplit=1)
+    task_id = parts[1].strip() if len(parts) == 2 else ""
+    if not task_id:
+        print(painter.yellow("用法：/done <任务 id>（id 可用 /tasks 查看）"))
+        return
+
+    try:
+        task = assistant.desk_store.complete_task(task_id)
+    except KeyError:
+        print(painter.yellow(f"任务不存在：{task_id}"))
+    except ValueError as exc:
+        print(painter.yellow(str(exc)))
+    else:
+        print(painter.green(f"已完成：{task.title}（id={task.id}）"))
 
 
 def main(argv: list[str] | None = None) -> int:

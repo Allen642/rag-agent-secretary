@@ -7,6 +7,7 @@ from .models import (
     STATUSES,
     Task,
     is_date_only,
+    local_day_bounds,
     parse_timestamp,
     to_local_iso,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "Notification",
     "Task",
     "is_date_only",
+    "local_day_bounds",
     "parse_natural",
     "parse_timestamp",
     "to_local_iso",
