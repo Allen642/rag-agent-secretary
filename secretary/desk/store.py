@@ -18,12 +18,19 @@ import sqlite3
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from ..config import DATA_DIR, PROJECT_ROOT
-from .models import PRIORITIES, STATUSES, Task, parse_timestamp
+from .models import (
+    PRIORITIES,
+    STATUSES,
+    Task,
+    parse_timestamp,
+    to_local_iso,
+)
 
 # 相对路径一律基于项目根目录解析，避免受启动目录影响
 DEFAULT_DESK_DB = DATA_DIR / "runtime" / "desk.db"
@@ -32,6 +39,11 @@ _COLUMNS = (
     "id, title, status, priority, due_ts, remind_minutes, tags, notes, "
     "dedupe_key, created_ts, updated_ts, completed_ts, reminded_ts"
 )
+
+_NOTIFICATION_COLUMNS = "id, task_id, kind, title, body, due_ts, created_ts, read_ts"
+
+# 通知类型：remind 是正常提醒，missed 是 daemon 启动时合并补发的错过提醒
+NOTIFICATION_KINDS: tuple[str, ...] = ("remind", "missed")
 
 _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -55,7 +67,68 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_tasks_status_due ON tasks(status, due_ts)",
     "CREATE INDEX IF NOT EXISTS idx_tasks_dedupe ON tasks(dedupe_key, status)",
+    """
+    CREATE TABLE IF NOT EXISTS notifications (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id    TEXT,
+        kind       TEXT NOT NULL CHECK (kind IN ('remind', 'missed')),
+        title      TEXT NOT NULL,
+        body       TEXT NOT NULL DEFAULT '',
+        due_ts     INTEGER,
+        created_ts INTEGER NOT NULL,
+        read_ts    INTEGER
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_notifications_unread
+        ON notifications(read_ts, created_ts, id)
+    """,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class Notification:
+    """一条通知：正常提醒（``remind``）或启动补发的错过提醒（``missed``）。
+
+    ``task_id`` 为 ``None`` 表示这是一条合并通知（多条任务共用一条记录）。
+    ``read_ts`` 为 ``None`` 表示未读。
+    """
+
+    id: int
+    task_id: str | None
+    kind: str
+    title: str
+    body: str
+    due_ts: int | None
+    created_ts: int
+    read_ts: int | None
+
+    @property
+    def created_at(self) -> str:
+        """创建时间（本地 ISO 文本），方便 CLI/Web 直接展示。"""
+
+        return to_local_iso(self.created_ts) or ""
+
+    @property
+    def read_at(self) -> str | None:
+        return to_local_iso(self.read_ts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """转成普通 dict，读/写接口都只暴露 JSON 友好的字段。"""
+
+        return {
+            "id": self.id,
+            "task_id": self.task_id,
+            "kind": self.kind,
+            "title": self.title,
+            "body": self.body,
+            "due_ts": self.due_ts,
+            "due_at": to_local_iso(self.due_ts),
+            "created_ts": self.created_ts,
+            "created_at": self.created_at,
+            "read_ts": self.read_ts,
+            "read_at": self.read_at,
+        }
 
 
 def _resolve_db_path(db_path: Path | str | None) -> Path:
@@ -153,6 +226,41 @@ def _row_to_task(row: sqlite3.Row) -> Task:
     )
 
 
+def _row_to_notification(row: sqlite3.Row) -> Notification:
+    return Notification(
+        id=int(row["id"]),
+        task_id=row["task_id"],
+        kind=row["kind"],
+        title=row["title"],
+        body=row["body"],
+        due_ts=row["due_ts"],
+        created_ts=row["created_ts"],
+        read_ts=row["read_ts"],
+    )
+
+
+def _normalize_kind(kind: str) -> str:
+    if kind not in NOTIFICATION_KINDS:
+        raise ValueError(
+            f"kind 必须是 {'/'.join(NOTIFICATION_KINDS)} 之一，当前：{kind!r}"
+        )
+    return kind
+
+
+def _require_ts(value: int, *, field: str) -> int:
+    """epoch 秒必须是非负整数；bool 虽然是 int 子类，但不应混进来。"""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field} 必须是非负整数 epoch 秒")
+    return value
+
+
+def _normalize_limit(limit: int) -> int:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit 必须是大于 0 的整数")
+    return limit
+
+
 class DeskStore:
     """待办/日程的 sqlite3 存储。
 
@@ -204,8 +312,8 @@ class DeskStore:
         with self._write() as conn:
             for statement in _SCHEMA_STATEMENTS:
                 conn.execute(statement)
-            # 给未来迁移留出版本位
-            conn.execute("PRAGMA user_version = 1")
+            # schema 版本：v2 新增 notifications 表（提醒/补发记录）
+            conn.execute("PRAGMA user_version = 2")
 
     # ------------------------------------------------------------------ 读取
 
@@ -283,7 +391,137 @@ class DeskStore:
                 ).fetchone()
         return int(row[0])
 
+    def list_due(self, now_ts: int) -> list[Task]:
+        """列出「已经到提醒时间但尚未提醒」的 open 任务。
+
+        触发时间 = ``due_ts - remind_minutes * 60``。只返回 ``reminded_ts``
+        为空的任务，并按触发时间升序排列，方便 daemon 先处理最早的。
+        """
+
+        now_ts = _require_ts(now_ts, field="now_ts")
+        sql = (
+            f"SELECT {_COLUMNS} FROM tasks "
+            "WHERE status = 'open' "
+            "AND remind_minutes IS NOT NULL "
+            "AND due_ts IS NOT NULL "
+            "AND due_ts - remind_minutes * 60 <= ? "
+            "AND reminded_ts IS NULL "
+            "ORDER BY due_ts - remind_minutes * 60 ASC, due_ts ASC, id ASC"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(sql, (now_ts,)).fetchall()
+        return [_row_to_task(row) for row in rows]
+
+    def list_notifications(
+        self, *, unread_only: bool = False, limit: int = 50
+    ) -> list[Notification]:
+        """按创建时间倒序列出通知；只读，不修改 ``read_ts``。"""
+
+        limit = _normalize_limit(limit)
+        where = "WHERE read_ts IS NULL " if unread_only else ""
+        sql = (
+            f"SELECT {_NOTIFICATION_COLUMNS} FROM notifications "
+            f"{where}ORDER BY created_ts DESC, id DESC LIMIT ?"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(sql, (limit,)).fetchall()
+        return [_row_to_notification(row) for row in rows]
+
+    def list_unread_notifications(self, *, limit: int = 50) -> list[Notification]:
+        """未读通知列表；读/写分离，读方法不产生副作用。"""
+
+        return self.list_notifications(unread_only=True, limit=limit)
+
+    def count_unread_notifications(self) -> int:
+        """未读通知条数，供 CLI/Web 显示红点。"""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM notifications WHERE read_ts IS NULL"
+            ).fetchone()
+        return int(row[0])
+
     # ------------------------------------------------------------------ 写入
+
+    def mark_reminded(self, task_id: str, ts: int) -> bool:
+        """把任务标记为「已提醒」，返回本次是否真的更新了行。
+
+        ``WHERE reminded_ts IS NULL`` 是条件更新：多个 daemon 进程同时扫描时，
+        只有一个能拿到 ``rowcount == 1``，其余返回 ``False``，从而保证幂等、
+        不会重复弹提醒。任务不存在或已经提醒过都返回 ``False``。
+        """
+
+        ts = _require_ts(ts, field="ts")
+        with self._write() as conn:
+            cursor = conn.execute(
+                "UPDATE tasks SET reminded_ts = ? "
+                "WHERE id = ? AND reminded_ts IS NULL",
+                (ts, task_id),
+            )
+            return cursor.rowcount == 1
+
+    def add_notification(
+        self,
+        *,
+        kind: str,
+        title: str,
+        body: str = "",
+        task_id: str | None = None,
+        due_ts: int | None = None,
+        created_ts: int | None = None,
+    ) -> Notification:
+        """写入一条通知并返回完整记录。
+
+        合并通知（如启动补发的 missed）不绑定单条任务，``task_id`` 传 ``None``；
+        ``created_ts`` 允许由调用方注入，daemon 用它保证一轮扫描时间一致。
+        """
+
+        kind = _normalize_kind(kind)
+        cleaned_title = _normalize_title(title)
+        cleaned_body = "" if body is None else str(body)
+        cleaned_task_id = None if task_id is None else str(task_id).strip() or None
+        if due_ts is not None:
+            due_ts = _require_ts(due_ts, field="due_ts")
+        created = int(time.time()) if created_ts is None else _require_ts(
+            created_ts, field="created_ts"
+        )
+
+        with self._write() as conn:
+            cursor = conn.execute(
+                "INSERT INTO notifications "
+                "(task_id, kind, title, body, due_ts, created_ts, read_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                (
+                    cleaned_task_id,
+                    kind,
+                    cleaned_title,
+                    cleaned_body,
+                    due_ts,
+                    created,
+                ),
+            )
+            row = conn.execute(
+                f"SELECT {_NOTIFICATION_COLUMNS} FROM notifications WHERE id = ?",
+                (cursor.lastrowid,),
+            ).fetchone()
+        assert row is not None  # 刚插入的行必然存在
+        return _row_to_notification(row)
+
+    def mark_notification_read(
+        self, notification_id: int, *, ts: int | None = None
+    ) -> bool:
+        """把通知标记为已读；已经读过或不存在时返回 ``False``（条件更新）。"""
+
+        if isinstance(notification_id, bool) or not isinstance(notification_id, int):
+            raise ValueError("notification_id 必须是整数")  # noqa: TRY004
+        read_ts = int(time.time()) if ts is None else _require_ts(ts, field="ts")
+        with self._write() as conn:
+            cursor = conn.execute(
+                "UPDATE notifications SET read_ts = ? "
+                "WHERE id = ? AND read_ts IS NULL",
+                (read_ts, notification_id),
+            )
+            return cursor.rowcount == 1
 
     def add_task(
         self,

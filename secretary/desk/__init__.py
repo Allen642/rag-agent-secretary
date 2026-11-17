@@ -8,15 +8,24 @@ from .models import (
     parse_timestamp,
     to_local_iso,
 )
-from .store import DEFAULT_DESK_DB, DeskStore
+from .store import (
+    DEFAULT_DESK_DB,
+    NOTIFICATION_KINDS,
+    DeskStore,
+    Notification,
+)
+from .timeparse import parse_natural
 
 __all__ = [
     "DEFAULT_DESK_DB",
+    "NOTIFICATION_KINDS",
     "PRIORITIES",
     "STATUSES",
     "DeskStore",
+    "Notification",
     "Task",
     "is_date_only",
+    "parse_natural",
     "parse_timestamp",
     "to_local_iso",
 ]
