@@ -21,3 +21,7 @@ streamlit>=1.50,<2.0
 python-dotenv>=1.0,<2.0
 # Windows 终端的 ANSI 颜色支持（chat.py 可选使用）
 colorama>=0.4.6,<1.0
+
+# ===== 企业微信回调加解密 =====
+# 企业微信回调消息是 AES-256-CBC 加密，标准库无 AES，官方加解密库同样依赖它
+pycryptodome>=3.20,<4.0
