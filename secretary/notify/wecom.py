@@ -61,18 +61,31 @@ class WeComNotifier(Notifier):
 
     # -------------------------------------------------------------- public
 
-    def send(self, title: str, body: str) -> bool:
-        """发送文本消息；任何失败都只记日志并返回 False，不抛异常。"""
+    def send(
+        self,
+        title: str,
+        body: str,
+        user_id: str | None = None,
+    ) -> bool:
+        """发送文本消息；任何失败都只记日志并返回 False，不抛异常。
+
+        ``user_id`` 用于覆盖构造时的默认接收人。接收消息服务器需要把
+        回复发给具体发消息的成员（``FromUserName``），而定时提醒仍可用
+        ``WECOM_USER_ID`` 指定的默认接收人。
+        """
 
         token = self._get_access_token()
         if not token:
             return False
 
+        recipient = (user_id or "").strip() or self._user_id
+        # 允许只传正文：空标题不留下多余的空行
+        content = "\n".join(part for part in (title, body) if part)
         payload = {
-            "touser": self._user_id,
+            "touser": recipient,
             "msgtype": "text",
             "agentid": self._agent_id,
-            "text": {"content": f"{title}\n{body}"},
+            "text": {"content": content},
         }
         url = (
             f"{self._api_base}/cgi-bin/message/send?"

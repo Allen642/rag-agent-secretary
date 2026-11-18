@@ -131,6 +131,26 @@ def test_default_touser_is_all(install_urlopen) -> None:
     assert payload["touser"] == "@all"
 
 
+def test_send_can_override_recipient(install_urlopen) -> None:
+    recorder = install_urlopen(TOKEN_RESPONSE, OK_RESPONSE)
+
+    assert _notifier().send("", "你好，我是秘书", user_id="lisi") is True
+
+    payload = json.loads(recorder.requests[1][0].data.decode("utf-8"))
+    assert payload["touser"] == "lisi"
+    # 空标题不会在正文前留下多余空行
+    assert payload["text"]["content"] == "你好，我是秘书"
+
+
+def test_send_blank_override_falls_back_to_default(install_urlopen) -> None:
+    recorder = install_urlopen(TOKEN_RESPONSE, OK_RESPONSE)
+
+    assert _notifier().send("标题", "正文", user_id="  ") is True
+
+    payload = json.loads(recorder.requests[1][0].data.decode("utf-8"))
+    assert payload["touser"] == "zhangsan"
+
+
 # --------------------------------------------------------------- token 缓存
 
 

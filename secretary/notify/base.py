@@ -13,8 +13,17 @@ class Notifier(ABC):
     """
 
     @abstractmethod
-    def send(self, title: str, body: str) -> bool:
-        """推送一条通知，成功返回 True。"""
+    def send(
+        self,
+        title: str,
+        body: str,
+        user_id: str | None = None,
+    ) -> bool:
+        """推送一条通知，成功返回 True。
+
+        ``user_id`` 是可选接收人，只有支持定向发送的渠道才会使用；
+        不传时由实现决定默认接收人。
+        """
 
 
 class NoopNotifier(Notifier):
@@ -23,5 +32,10 @@ class NoopNotifier(Notifier):
     这里返回 ``True``：没有配置推送并不是错误，调用方无需反复告警。
     """
 
-    def send(self, title: str, body: str) -> bool:
+    def send(
+        self,
+        title: str,
+        body: str,
+        user_id: str | None = None,
+    ) -> bool:
         return True

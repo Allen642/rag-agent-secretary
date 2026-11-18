@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import sys
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode
@@ -57,6 +58,7 @@ _BOT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "wecom_bot.py"
 _SPEC = importlib.util.spec_from_file_location("wecom_bot_for_crypt_test", _BOT_PATH)
 assert _SPEC is not None and _SPEC.loader is not None
 wecom_bot = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = wecom_bot
 _SPEC.loader.exec_module(wecom_bot)
 
 
