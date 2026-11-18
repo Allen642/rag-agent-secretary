@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     kb = ChromaKnowledgeBase()
 
     if args.command == "add":
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         metadata = {"source": "manual", "topic": args.topic, "updated_at": now}
         if args.id:
             ids = kb.upsert_texts([args.text], metadatas=[metadata], ids=[args.id])

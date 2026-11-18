@@ -17,7 +17,7 @@ import re
 import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -82,7 +82,7 @@ def ingest_text(
     if not cleaned:
         raise ValueError("文本不能为空")
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     metadata = {
         "source": source,
         "topic": topic,
@@ -145,7 +145,7 @@ def ingest_file(
     existing_items = kb.list_texts(limit=None, where={"source_path": source_path})
     existing_by_id = {item.id: item for item in existing_items if item.id}
     new_ids = {chunk.id for chunk in chunks}
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     texts: list[str] = []
     metadatas: list[dict] = []
