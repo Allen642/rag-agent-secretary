@@ -45,6 +45,13 @@ class Settings:
     docs_dir: Path
     embedding_model: str
     embedding_device: str = "cpu"
+    # ---- 通知推送（Slice 6a）----
+    # none：不推送；wecom：企业微信应用消息
+    notify_channel: str = "none"
+    wecom_corp_id: str = ""
+    wecom_agent_id: str = ""
+    wecom_secret: str = ""
+    wecom_user_id: str = "@all"
 
     @property
     def has_api_key(self) -> bool:
@@ -77,6 +84,11 @@ def get_settings() -> Settings:
         embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5").strip(),
         # 本项目明确只做 CPU 推理，默认值不提供 CUDA 选项
         embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu").strip() or "cpu",
+        notify_channel=os.getenv("NOTIFY_CHANNEL", "none").strip() or "none",
+        wecom_corp_id=os.getenv("WECOM_CORP_ID", "").strip(),
+        wecom_agent_id=os.getenv("WECOM_AGENT_ID", "").strip(),
+        wecom_secret=os.getenv("WECOM_SECRET", "").strip(),
+        wecom_user_id=os.getenv("WECOM_USER_ID", "@all").strip() or "@all",
     )
 
 

@@ -315,6 +315,20 @@ cd D:\rag-agent-secretary
 daemon 启动后会先补发已错过截止时间但尚未提醒的任务，之后到点打印提醒并写入
 `notifications` 表；每天只发一次简报，重启不会重复。
 
+想把提醒和简报推到企业微信，在 `.env` 中设置：
+
+```dotenv
+NOTIFY_CHANNEL=wecom
+WECOM_CORP_ID=你的企业ID
+WECOM_AGENT_ID=1000002
+WECOM_SECRET=自建应用的Secret
+WECOM_USER_ID=@all
+```
+
+推送只使用标准库 `urllib`，不需要额外依赖。企业微信的 `access_token`
+会在进程内缓存并提前刷新；推送失败只记警告，不会中断 daemon。`NOTIFY_CHANNEL`
+保持默认 `none` 时只打印到终端。
+
 ### 三端查看
 
 - **命令行**：`chat.py` 内输入 `/tasks`（当前待办）、`/agenda`（今日安排 +
@@ -458,6 +472,11 @@ kb.delete_texts(ids=["doc-001"])
 | `TRANSFORMERS_OFFLINE` | 未设置 | 设为 `1` 后强制离线加载缓存 |
 | `BRIEFING_TIME` | `08:00` | 提醒 daemon 每日简报时刻（HH:MM） |
 | `REMIND_INTERVAL_SECONDS` | `30` | 提醒 daemon 轮询间隔（秒） |
+| `NOTIFY_CHANNEL` | `none` | 通知渠道：`none` / `wecom` |
+| `WECOM_CORP_ID` | 空 | 企业微信企业 ID |
+| `WECOM_AGENT_ID` | 空 | 企业微信应用 AgentId |
+| `WECOM_SECRET` | 空 | 企业微信应用 Secret |
+| `WECOM_USER_ID` | `@all` | 接收人，多个 UserID 用 `\|` 分隔 |
 
 系统环境变量优先于 `.env`。代码在未设置 `HF_ENDPOINT` 时会自动回退到
 `https://hf-mirror.com`；如需官方源，显式设置：

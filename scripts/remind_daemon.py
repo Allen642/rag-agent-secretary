@@ -20,12 +20,15 @@
   * 每轮还会检查当天是否已发简报：过了 ``--briefing`` 时刻且当天没有
     ``briefing`` 通知时，生成「今日待办 + 已过期未完成」并写入通知表，
     重启后靠 ``has_briefing_since`` 去重，不会重复发；
-  * 标记 ``reminded_ts`` 使用条件更新，重启或多进程同时跑也不会重复弹。
+  * 标记 ``reminded_ts`` 使用条件更新，重启或多进程同时跑也不会重复弹；
+  * 配置 ``NOTIFY_CHANNEL=wecom`` 时，提醒、补发和简报会同步推送到企业微信；
+    推送失败只记警告，不影响终端输出和数据库写入。
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sqlite3
 import sys
@@ -37,6 +40,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from secretary.config import get_settings
 from secretary.desk import (
     DEFAULT_DESK_DB,
     DeskStore,
@@ -44,6 +48,9 @@ from secretary.desk import (
     local_day_bounds,
     to_local_iso,
 )
+from secretary.notify import Notifier, make_notifier
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_SECONDS = 30.0
 INTERVAL_ENV = "REMIND_INTERVAL_SECONDS"
@@ -72,7 +79,27 @@ def _missed_body(tasks: list[Task]) -> str:
     )
 
 
-def _tick(store: DeskStore, now_ts: int, *, catch_up: bool = False) -> list[Task]:
+def _push(notifier: Notifier | None, title: str, body: str) -> None:
+    """推送通知；失败只记警告，绝不让 daemon 主流程中断。"""
+
+    if notifier is None:
+        return
+    try:
+        ok = notifier.send(title, body)
+    except Exception as exc:  # noqa: BLE001 - 推送渠道再稳也不能拖垮 daemon
+        logger.warning("通知推送异常（%s）：%s", title, exc)
+        return
+    if not ok:
+        logger.warning("通知推送失败（%s）", title)
+
+
+def _tick(
+    store: DeskStore,
+    now_ts: int,
+    *,
+    catch_up: bool = False,
+    notifier: Notifier | None = None,
+) -> list[Task]:
     """执行一轮扫描，返回本轮真正发出通知的任务。
 
     ``catch_up=True`` 只用在 daemon 启动后的第一轮：触发时间已到、但截止时间
@@ -102,16 +129,18 @@ def _tick(store: DeskStore, now_ts: int, *, catch_up: bool = False) -> list[Task
         )
         handled.append(task)
         _print_reminder(task)
+        _push(notifier, task.title, f"截止：{to_local_iso(task.due_ts) or '-'}")
 
     if missed:
         # 逐条条件更新；只有真正标记成功的才计入合并通知
         marked = [task for task in missed if store.mark_reminded(task.id, now_ts)]
         if marked:
             title = f"错过的提醒（{len(marked)} 条）"
+            body = _missed_body(marked)
             store.add_notification(
                 kind="missed",
                 title=title,
-                body=_missed_body(marked),
+                body=body,
                 created_ts=now_ts,
             )
             handled.extend(marked)
@@ -119,6 +148,7 @@ def _tick(store: DeskStore, now_ts: int, *, catch_up: bool = False) -> list[Task
             for task in marked:
                 due = to_local_iso(task.due_ts) or "-"
                 print(f"       - {task.title}（截止 {due}）", flush=True)
+            _push(notifier, title, body)
 
     return handled
 
@@ -184,7 +214,11 @@ def build_briefing_text(store: DeskStore, now_ts: int) -> str:
 
 
 def maybe_send_briefing(
-    store: DeskStore, now_ts: int, briefing_time: str = DEFAULT_BRIEFING_TIME
+    store: DeskStore,
+    now_ts: int,
+    briefing_time: str = DEFAULT_BRIEFING_TIME,
+    *,
+    notifier: Notifier | None = None,
 ) -> bool:
     """到点且当天还没发过简报时写入一条 ``briefing`` 通知，返回是否发出。
 
@@ -210,6 +244,7 @@ def maybe_send_briefing(
     print(f"[简报] {title}", flush=True)
     for line in body.splitlines():
         print(f"       {line}", flush=True)
+    _push(notifier, title, body)
     return True
 
 
@@ -290,11 +325,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"错误：无法打开数据库（{target}）：{exc}", file=sys.stderr)
         return 1
 
+    # 通知器只构造一次：企业微信 token 缓存可以跨轮复用
+    notifier = make_notifier(get_settings())
+
     # 启动补发 + 当天简报检查：只做一次，之后进入普通轮询
     try:
         now_ts = int(time.time())
-        _tick(store, now_ts, catch_up=True)
-        maybe_send_briefing(store, now_ts, briefing_time)
+        _tick(store, now_ts, catch_up=True, notifier=notifier)
+        maybe_send_briefing(store, now_ts, briefing_time, notifier=notifier)
     except (sqlite3.Error, OSError) as exc:
         print(f"错误：启动检查失败：{exc}", file=sys.stderr)
         return 1
@@ -311,8 +349,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             time.sleep(interval)
             now_ts = int(time.time())
-            _tick(store, now_ts)
-            maybe_send_briefing(store, now_ts, briefing_time)
+            _tick(store, now_ts, notifier=notifier)
+            maybe_send_briefing(store, now_ts, briefing_time, notifier=notifier)
         except KeyboardInterrupt:
             print("提醒 daemon 已停止", flush=True)
             return 0
