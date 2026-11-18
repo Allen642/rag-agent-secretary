@@ -13,6 +13,7 @@ from secretary.graph import (
     _route_from_supervisor,
     build_secretary_graph,
 )
+from secretary.prompts import DESK_EXPERT_PROMPT
 from secretary.rag import ChromaKnowledgeBase
 from secretary.supervisor import RouteDecision
 from secretary.tools import DESK_TOOL_NAMES, make_desk_tools
@@ -119,6 +120,12 @@ def test_desk_expert_name(store: DeskStore) -> None:
     expert = DeskExpert(DemoChatModel(), make_desk_tools(store))
 
     assert expert.name == "desk_expert"
+
+
+def test_desk_prompt_maps_on_time_remind_to_zero() -> None:
+    """弱回归：提示词必须保留“到点提醒 → remind_minutes=0”的映射。"""
+    assert "到点提醒" in DESK_EXPERT_PROMPT
+    assert "remind_minutes 填 0" in DESK_EXPERT_PROMPT
 
 
 def test_route_decision_accepts_desk_expert() -> None:

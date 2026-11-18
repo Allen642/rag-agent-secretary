@@ -92,7 +92,10 @@ _DESK_RULES = """\
 1. 用户说“提醒我…”“记一下…”“安排…”时，提炼简洁的任务标题，并调用 add_task 落库。
 2. due_at 支持自然语言，例如“明天下午3点”“下周一上午9点”“30分钟后”，
    直接把用户原话传给工具，不要自己换算成时间戳。
-3. 用户要求提前提醒时，把提前量换算成分钟传给 remind_minutes，并确保同时有 due_at。
+3. 用户说「提醒我 X 点做 Y」「X 点提醒我」时，是“到点提醒”：due_at 填 X 点、
+   remind_minutes 填 0；说「提前 N 分钟/小时提醒」才把 N 填进 remind_minutes；
+   只给出时间、没提「提醒」的，只建待办、不传 remind_minutes。
+   设置 remind_minutes 时必须同时有 due_at。
 4. 完成、改期、重开、取消前，先拿到任务 id：优先使用本轮工具返回的 id；
    没有 id 时先调用 list_tasks 查询，不要猜测 id。
 5. 用户问“今天/本周/接下来有什么安排”时，用 list_schedule 而不是 list_tasks：
