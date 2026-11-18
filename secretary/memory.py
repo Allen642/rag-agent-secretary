@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
@@ -161,7 +161,7 @@ class MemoryCurator:
         if not decision.should_store:
             return {"memories_saved": 0, "memory_ids": []}
 
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         texts: list[str] = []
         metadatas: list[dict] = []
         ids: list[str] = []
