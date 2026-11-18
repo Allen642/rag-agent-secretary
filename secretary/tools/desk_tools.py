@@ -62,7 +62,9 @@ def _format_task(task: Task) -> str:
     status = STATUS_LABELS.get(task.status, task.status)
     due = to_local_iso(task.due_ts) or "未设置"
     text = f"{task.id} | {task.title} | {status} | 截止 {due}"
-    if task.remind_minutes is not None:
+    if task.remind_minutes == 0:
+        text += " | 到点提醒"
+    elif task.remind_minutes:
         text += f" | 提前 {task.remind_minutes} 分钟提醒"
     return text
 

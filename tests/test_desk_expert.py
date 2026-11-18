@@ -128,6 +128,21 @@ def test_desk_prompt_maps_on_time_remind_to_zero() -> None:
     assert "remind_minutes 填 0" in DESK_EXPERT_PROMPT
 
 
+def test_add_task_formats_on_time_remind_as_due_now(store: DeskStore, desk_tools) -> None:
+    """remind_minutes=0 是到点提醒，不能显示成“提前 0 分钟提醒”。"""
+
+    on_time = desk_tools["add_task"].invoke(
+        {"title": "出门", "due_at": "11点50分", "remind_minutes": 0}
+    )
+    ahead = desk_tools["add_task"].invoke(
+        {"title": "交房租", "due_at": "明天下午3点", "remind_minutes": 60}
+    )
+
+    assert "到点提醒" in on_time
+    assert "提前 0 分钟" not in on_time
+    assert "提前 60 分钟提醒" in ahead
+
+
 def test_route_decision_accepts_desk_expert() -> None:
     decision = RouteDecision(next_agent="desk_expert", reason="涉及待办提醒")
 

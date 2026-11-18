@@ -56,7 +56,9 @@ def _describe(task: Task) -> str:
         f"优先级={PRIORITY_LABELS.get(task.priority, task.priority)}",
         f"截止={to_local_iso(task.due_ts) or '-'}",
     ]
-    if task.remind_minutes is not None:
+    if task.remind_minutes == 0:
+        parts.append("到点提醒")
+    elif task.remind_minutes:
         parts.append(f"提前={task.remind_minutes} 分钟")
     if task.tags:
         parts.append("标签=" + ",".join(task.tags))
