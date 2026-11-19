@@ -137,6 +137,23 @@ class SecretaryAssistant:
             enable_auto_memory=self._enable_auto_memory,
         )
 
+    def _rebuild(self, settings: Settings) -> None:
+        """按新 settings 重建 llm + graph，复用 knowledge_base/desk_store。
+
+        先构造新模型再写回属性：``build_chat_model`` 抛错时（如 key 缺失）
+        助理仍停留在旧 settings/llm/graph 上，调用方可以安全地重试。
+        """
+
+        new_llm = build_chat_model(settings)
+        self.settings = settings
+        self.llm = new_llm
+        self.graph = build_secretary_graph(
+            self.llm,
+            knowledge_base=self.knowledge_base,
+            desk_store=self.desk_store,
+            enable_auto_memory=self._enable_auto_memory,
+        )
+
     def switch_model(self, provider: str | None = None, model: str | None = None) -> str:
         """切换 provider/model 并重建图；复用 knowledge_base/desk_store，不重载 embedding。
 
@@ -154,17 +171,25 @@ class SecretaryAssistant:
                     settings = replace(settings, zhipu_model=model)
                 else:
                     settings = replace(settings, deepseek_model=model)
-            new_llm = build_chat_model(settings)  # 可能抛 RuntimeError（key 缺失）
-            self.settings = settings
-            self.llm = new_llm
-            self.graph = build_secretary_graph(
-                self.llm,
-                knowledge_base=self.knowledge_base,
-                desk_store=self.desk_store,
-                enable_auto_memory=self._enable_auto_memory,
-            )
+            self._rebuild(settings)
             current = settings.zhipu_model if provider == "zhipu" else settings.deepseek_model
             return f"已切换到 {provider}/{current}"
+
+    def switch_effort(self, effort: str | None = None) -> str:
+        """设置 DeepSeek 推理强度（low/high/max，空清除），重建 llm + graph。
+
+        只对 deepseek 生效；当前 provider 不是 deepseek 时抛 ValueError。
+        """
+
+        with self._model_lock:
+            if self.settings.model_provider != "deepseek":
+                raise ValueError("当前 provider 不是 deepseek，推理强度只对 deepseek 生效")
+            effort = (effort or "").strip().lower()
+            if effort not in ("", "low", "high", "max"):
+                raise ValueError(f"推理强度只能是 low/high/max，当前：{effort!r}")
+            settings = replace(self.settings, deepseek_reasoning_effort=effort)
+            self._rebuild(settings)
+            return f"推理强度已设为 {effort or '默认'}"
 
     def stream(
         self,

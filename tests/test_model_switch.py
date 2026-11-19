@@ -101,3 +101,86 @@ def test_switch_model_failure_keeps_previous_state(tmp_path, monkeypatch) -> Non
     assert assistant.settings is old_settings
     assert assistant.llm is old_llm
     assert assistant.graph is old_graph
+
+
+def test_switch_effort_rebuilds_llm_and_graph(tmp_path, monkeypatch) -> None:
+    assistant, built = _make_assistant(tmp_path, monkeypatch)
+    old_llm = assistant.llm
+    old_graph = assistant.graph
+    knowledge_base = assistant.knowledge_base
+    desk_store = assistant.desk_store
+
+    result = assistant.switch_effort("high")
+
+    assert result == "推理强度已设为 high"
+    assert assistant.settings.deepseek_reasoning_effort == "high"
+    assert built[-1][0].deepseek_reasoning_effort == "high"
+    assert assistant.llm is built[-1][1]
+    assert assistant.llm is not old_llm
+    assert assistant.graph is not old_graph
+    # 只重建 llm + graph，重资源对象复用
+    assert assistant.knowledge_base is knowledge_base
+    assert assistant.desk_store is desk_store
+
+
+def test_switch_effort_clears_with_empty_value(tmp_path, monkeypatch) -> None:
+    assistant, built = _make_assistant(tmp_path, monkeypatch)
+    assistant.switch_effort("max")
+
+    result = assistant.switch_effort(None)
+
+    assert result == "推理强度已设为 默认"
+    assert assistant.settings.deepseek_reasoning_effort == ""
+    assert built[-1][0].deepseek_reasoning_effort == ""
+
+
+def test_switch_effort_requires_deepseek_provider(tmp_path, monkeypatch) -> None:
+    assistant, built = _make_assistant(tmp_path, monkeypatch)
+    assistant.switch_model("zhipu")
+    old_settings = assistant.settings
+    old_llm = assistant.llm
+    old_graph = assistant.graph
+    calls_after_switch = len(built)
+
+    with pytest.raises(ValueError, match="不是 deepseek"):
+        assistant.switch_effort("high")
+
+    assert assistant.settings is old_settings
+    assert assistant.llm is old_llm
+    assert assistant.graph is old_graph
+    assert len(built) == calls_after_switch
+
+
+def test_switch_effort_rejects_invalid_level(tmp_path, monkeypatch) -> None:
+    assistant, built = _make_assistant(tmp_path, monkeypatch)
+    old_settings = assistant.settings
+    old_llm = assistant.llm
+    old_graph = assistant.graph
+
+    with pytest.raises(ValueError, match="推理强度只能是 low/high/max"):
+        assistant.switch_effort("ultra")
+
+    # 失败时状态完全不变，也没有触发重建
+    assert assistant.settings is old_settings
+    assert assistant.llm is old_llm
+    assert assistant.graph is old_graph
+    assert built == []
+
+
+def test_switch_effort_failure_keeps_previous_state(tmp_path, monkeypatch) -> None:
+    assistant, _ = _make_assistant(tmp_path, monkeypatch)
+    old_settings = assistant.settings
+    old_llm = assistant.llm
+    old_graph = assistant.graph
+
+    def failing_build(settings=None, **kwargs):
+        raise RuntimeError("缺少 DEEPSEEK_API_KEY")
+
+    monkeypatch.setattr(graph_module, "build_chat_model", failing_build)
+
+    with pytest.raises(RuntimeError, match="DEEPSEEK_API_KEY"):
+        assistant.switch_effort("max")
+
+    assert assistant.settings is old_settings
+    assert assistant.llm is old_llm
+    assert assistant.graph is old_graph

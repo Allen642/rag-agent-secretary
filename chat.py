@@ -13,6 +13,7 @@
     /agenda       查看今日安排与已过期未完成
     /done <id>    把指定任务标记为完成
     /model <provider>  切换模型（deepseek / zhipu）
+    /effort <level>    设置 DeepSeek 推理强度（low / high / max）
     /help         显示帮助
 """
 
@@ -46,6 +47,7 @@ HELP_TEXT = """\
   /agenda      查看今日安排与已过期未完成
   /done <id>   把指定任务标记为完成（id 可用 /tasks 查看）
   /model [provider]  切换模型（deepseek / zhipu），如 /model zhipu
+  /effort [low|high|max]  设置 DeepSeek 推理强度，如 /effort high；不带参数恢复默认
   /help        显示帮助
 
 直接输入问题即可；想说“记住……”时它会自动写入长期记忆。
@@ -207,6 +209,15 @@ def chat_loop(assistant: SecretaryAssistant, *, verbose: bool, color: bool) -> i
                 print(painter.green(result))
             except Exception as exc:
                 print(painter.yellow(f"切换失败：{exc}"))
+            continue
+
+        if question.startswith("/effort"):
+            parts = question.split()
+            effort = parts[1] if len(parts) > 1 else ""
+            try:
+                print(painter.green(assistant.switch_effort(effort or None)))
+            except Exception as exc:
+                print(painter.yellow(f"设置失败：{exc}"))
             continue
 
         try:

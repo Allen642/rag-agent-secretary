@@ -613,6 +613,75 @@ def test_handle_message_model_command_replies_failure(monkeypatch) -> None:
     assert dispatched == []
 
 
+def test_handle_message_effort_command_switches_inline(monkeypatch) -> None:
+    dispatched: list[tuple] = []
+    monkeypatch.setattr(
+        wecom_bot,
+        "dispatch_reply",
+        lambda *args, **kwargs: dispatched.append(args),
+    )
+
+    class _EffortAssistant(_FakeAssistant):
+        def __init__(self) -> None:
+            super().__init__()
+            self.efforts: list[str | None] = []
+
+        def switch_effort(self, effort=None):
+            self.efforts.append(effort)
+            return f"推理强度已设为 {effort or '默认'}"
+
+    assistant = _EffortAssistant()
+    notifier = _FakeNotifier()
+    params, body = _signed_request(_plain_xml(content="/effort high"))
+
+    status, reply = wecom_bot.handle_message(
+        _crypt(), params, body, assistant=assistant, notifier=notifier
+    )
+
+    assert status == 200
+    assert reply == ""
+    assert assistant.efforts == ["high"]
+    # 同步回复，不进入普通对话线程
+    assert assistant.questions == []
+    assert notifier.sent == [("", "推理强度已设为 high", "zhangsan")]
+    assert dispatched == []
+
+
+def test_handle_message_effort_command_replies_failure(monkeypatch) -> None:
+    dispatched: list[tuple] = []
+    monkeypatch.setattr(
+        wecom_bot,
+        "dispatch_reply",
+        lambda *args, **kwargs: dispatched.append(args),
+    )
+
+    class _FailingAssistant(_FakeAssistant):
+        def switch_effort(self, effort=None):
+            raise ValueError("当前 provider 不是 deepseek，推理强度只对 deepseek 生效")
+
+    notifier = _FakeNotifier()
+    params, body = _signed_request(_plain_xml(content="/effort max"))
+
+    status, reply = wecom_bot.handle_message(
+        _crypt(),
+        params,
+        body,
+        assistant=_FailingAssistant(),
+        notifier=notifier,
+    )
+
+    assert status == 200
+    assert reply == ""
+    assert notifier.sent == [
+        (
+            "",
+            "设置失败：当前 provider 不是 deepseek，推理强度只对 deepseek 生效",
+            "zhangsan",
+        )
+    ]
+    assert dispatched == []
+
+
 # ---------------------------------------------------------------- 构造依赖
 
 

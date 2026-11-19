@@ -24,6 +24,8 @@
 
 聊天中发送 ``/model <provider>``（如 ``/model zhipu``）可以全局切换
 模型，服务器会同步切换并立即回复结果，不进入后台对话线程。
+发送 ``/effort <low|high|max>`` 可以设置 DeepSeek 推理强度（不带参数恢复
+默认），同样同步处理并直接回复。
 
 启动时必须配置 ``WECOM_TOKEN`` 和 ``WECOM_ENCODING_AES_KEY``，还需要
 ``DEEPSEEK_API_KEY`` 以及企业微信应用的 corpid/agentid/secret；缺关键
@@ -433,6 +435,17 @@ def handle_message(
             result = assistant.switch_model(provider or None)
         except Exception as exc:
             result = f"切换失败：{exc}"
+        notifier.send("", result, user_id=message.from_user)
+        return 200, ""
+
+    # /effort 同样走同步处理：切换推理强度只影响后续对话，不需要排队
+    if content.startswith("/effort") and assistant is not None and notifier is not None:
+        parts = content.split()
+        effort = parts[1] if len(parts) > 1 else ""
+        try:
+            result = assistant.switch_effort(effort or None)
+        except Exception as exc:
+            result = f"设置失败：{exc}"
         notifier.send("", result, user_id=message.from_user)
         return 200, ""
 
