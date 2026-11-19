@@ -17,6 +17,11 @@
 企业微信被动回复有 5 秒超时，而 DeepSeek 生成回答通常需要更久，所以
 这里统一走「先 ACK、再异步主动回复」。非文本消息暂只记日志，不回复。
 
+为弥补企业微信入口没有 CLI/Web 的会话对象，服务器会用
+:class:`ConversationStore` 在进程内保存每个用户最近 20 条消息，并通过
+:meth:`SecretaryAssistant.ask_turn` 续接短期上下文；同一用户的多条消息
+按到达顺序串行处理，避免上下文互相覆盖。
+
 启动时必须配置 ``WECOM_TOKEN`` 和 ``WECOM_ENCODING_AES_KEY``，还需要
 ``DEEPSEEK_API_KEY`` 以及企业微信应用的 corpid/agentid/secret；缺关键
 配置时直接报错退出，避免半配置状态对外提供服务。
@@ -26,9 +31,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 import threading
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,6 +51,8 @@ from secretary.notify import NoopNotifier, Notifier, WeComNotifier
 from secretary.notify.wecom_crypt import WeComCrypt
 
 if TYPE_CHECKING:
+    from langchain_core.messages import BaseMessage
+
     from secretary.graph import SecretaryAssistant
 
 logger = logging.getLogger("wecom_bot")
@@ -56,6 +65,13 @@ ENDPOINT = "/wecom"
 REPLY_ERROR_TEXT = "抱歉，秘书处理这条消息时出了点问题，请稍后再试。"
 REPLY_THREAD_PREFIX = "wecom-reply"
 
+# 短期对话上下文：每个用户最多保留 20 条，进程内最多保留 256 个用户
+CONVERSATION_HISTORY_LIMIT = 20
+CONVERSATION_USER_LIMIT = 256
+# 企业微信文本消息上限按 UTF-8 字节计算，留出安全余量
+WECOM_TEXT_LIMIT_BYTES = 2048
+TRUNCATE_SUFFIX = "……"
+
 
 @dataclass(frozen=True, slots=True)
 class IncomingMessage:
@@ -64,6 +80,134 @@ class IncomingMessage:
     from_user: str = ""
     msg_type: str = ""
     content: str = ""
+
+
+class ConversationStore:
+    """进程内短期对话存储：按用户隔离历史，并保证同一用户串行处理。
+
+    企业微信没有像 CLI/Web 那样的会话对象，所以这里用一个共享实例挂住
+    最近几轮对话。历史只存在内存里，进程重启后清空；如果以后需要跨重启
+    保留，可以再替换成 LangGraph 的 SqliteSaver，调用方不需要改。
+
+    * 每个用户最多保留 ``max_messages`` 条消息（按用户裁剪）；
+    * 整个进程最多保留 ``max_users`` 个用户，超出按 LRU 淘汰；
+    * :meth:`lock_for` 返回该用户专属的锁，避免同一个人连发消息时
+      两轮上下文互相覆盖或回复顺序错乱。
+    """
+
+    def __init__(
+        self,
+        *,
+        max_messages: int = CONVERSATION_HISTORY_LIMIT,
+        max_users: int = CONVERSATION_USER_LIMIT,
+    ) -> None:
+        self._max_messages = max(1, max_messages)
+        self._max_users = max(1, max_users)
+        self._history: OrderedDict[str, list[BaseMessage]] = OrderedDict()
+        self._locks: dict[str, threading.Lock] = {}
+        # 保护 _history/_locks 自身；用户级互斥由 lock_for 返回的锁负责
+        self._guard = threading.Lock()
+
+    def lock_for(self, user_id: str) -> threading.Lock:
+        """返回某个用户的专属锁；同一用户的消息会按到达顺序串行处理。"""
+
+        with self._guard:
+            lock = self._locks.get(user_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[user_id] = lock
+            return lock
+
+    def get(self, user_id: str) -> list[BaseMessage]:
+        """读取该用户的历史副本；访问也会刷新 LRU 顺序。"""
+
+        with self._guard:
+            history = self._history.get(user_id)
+            if not history:
+                return []
+            self._history.move_to_end(user_id)
+            return list(history)
+
+    def set(self, user_id: str, history: list[BaseMessage]) -> None:
+        """覆盖写入该用户的历史，并裁剪到上限、淘汰最久未使用的用户。"""
+
+        with self._guard:
+            trimmed = list(history)[-self._max_messages :]
+            if not trimmed:
+                self._history.pop(user_id, None)
+                return
+
+            self._history[user_id] = trimmed
+            self._history.move_to_end(user_id)
+            while len(self._history) > self._max_users:
+                evicted, _ = self._history.popitem(last=False)
+                # 线程正在处理某个用户时先保留它的锁，避免出现两把锁
+                lock = self._locks.get(evicted)
+                if lock is None or not lock.locked():
+                    self._locks.pop(evicted, None)
+
+
+_MARKDOWN_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_MARKDOWN_UNDERLINE = re.compile(r"__(.+?)__")
+_MARKDOWN_STRIKE = re.compile(r"~~(.+?)~~")
+_MARKDOWN_INLINE_CODE = re.compile(r"`([^`\n]*)`")
+_MARKDOWN_FENCE = re.compile(r"```[^\n]*\n?")
+_MARKDOWN_HEADING = re.compile(r"(?m)^\s{0,3}#{1,6}\s*")
+
+
+def _plain_text(text: str) -> str:
+    """把 Markdown 精简成企业微信纯文本，避免符号和标题干扰阅读。
+
+    选择纯文本而不是 ``msgtype=markdown``，是因为知识库原文里常有
+    ``##`` 等标题，企业微信的 Markdown 子集不保证能渲染。这里去掉
+    常见标记，但保留列表项换行和段落结构。
+    """
+
+    if not text:
+        return ""
+
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _MARKDOWN_FENCE.sub("", text)
+    text = _MARKDOWN_INLINE_CODE.sub(r"\1", text)
+    text = _MARKDOWN_BOLD.sub(r"\1", text)
+    text = _MARKDOWN_UNDERLINE.sub(r"\1", text)
+    text = _MARKDOWN_STRIKE.sub(r"\1", text)
+    text = _MARKDOWN_HEADING.sub("", text)
+    # 折叠三个及以上连续换行，保留正常的段落和列表换行
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _truncate_utf8(text: str, limit: int = WECOM_TEXT_LIMIT_BYTES) -> str:
+    """按 UTF-8 字节数截断，绝不切断多字节字符。"""
+
+    data = text.encode("utf-8")
+    if len(data) <= limit:
+        return text
+
+    suffix = TRUNCATE_SUFFIX.encode("utf-8")
+    if limit <= len(suffix):
+        return TRUNCATE_SUFFIX.encode("utf-8")[:limit].decode("utf-8", "ignore")
+
+    # 先按字节切，再用 ignore 丢掉末尾可能被切断的半个字符
+    body = data[: limit - len(suffix)].decode("utf-8", "ignore").rstrip()
+    return body + TRUNCATE_SUFFIX
+
+
+def _ask_with_history(
+    assistant: SecretaryAssistant,
+    question: str,
+    history: list[BaseMessage],
+) -> tuple[str, list[BaseMessage]]:
+    """调用助理并拿到新历史；兼容只实现了 ``ask`` 的旧调用方/测试替身。"""
+
+    ask_turn = getattr(assistant, "ask_turn", None)
+    if callable(ask_turn):
+        answer, new_history = ask_turn(question, history=history)
+        return answer, list(new_history or [])
+
+    # 兜底：没有 ask_turn 时退化为单轮问答，不保存上下文
+    return assistant.ask(question), history
 
 
 def _configure_stdout() -> None:
@@ -129,11 +273,15 @@ def reply_to_message(
     message: IncomingMessage,
     assistant: SecretaryAssistant,
     notifier: Notifier,
+    conversations: ConversationStore | None = None,
 ) -> bool:
     """同步生成回答并主动发给消息发送人；供后台线程和测试调用。
 
     ``assistant`` 是启动时构造一次的共享实例，这里不负责创建。任何异常
     都在本函数内兜住，避免后台线程把 HTTP 服务拖垮。
+
+    ``conversations`` 用于同一用户的连续对话；不传时创建一个临时店，
+    保证单次调用仍然可用（只是不会跨消息保留上下文）。
     """
 
     question = message.content.strip()
@@ -141,28 +289,41 @@ def reply_to_message(
         logger.info("收到空文本消息，不回复")
         return False
 
-    try:
-        answer = assistant.ask(question)
-    except Exception:
-        logger.exception(
-            "处理企业微信消息失败：from=%s content=%s",
-            message.from_user,
-            question,
-        )
-        answer = REPLY_ERROR_TEXT
+    store = conversations or ConversationStore()
 
-    answer = (answer or "").strip() or REPLY_ERROR_TEXT
-    try:
-        return notifier.send("", answer, user_id=message.from_user)
-    except Exception:
-        logger.exception("发送企业微信回复失败：to=%s", message.from_user)
-        return False
+    # 整轮持锁：取历史 -> 生成回答 -> 存历史 -> 发回复，保证同用户按序
+    with store.lock_for(message.from_user):
+        history = store.get(message.from_user)
+        try:
+            answer, new_history = _ask_with_history(assistant, question, history)
+        except Exception:
+            logger.exception(
+                "处理企业微信消息失败：from=%s content=%s",
+                message.from_user,
+                question,
+            )
+            answer = REPLY_ERROR_TEXT
+            new_history = history
+
+        if new_history:
+            store.set(message.from_user, new_history)
+
+        # 先清洗 Markdown，再按企业微信文本上限做 UTF-8 安全截断
+        answer = _plain_text((answer or "").strip()) or REPLY_ERROR_TEXT
+        answer = _truncate_utf8(answer)
+
+        try:
+            return notifier.send("", answer, user_id=message.from_user)
+        except Exception:
+            logger.exception("发送企业微信回复失败：to=%s", message.from_user)
+            return False
 
 
 def dispatch_reply(
     message: IncomingMessage,
     assistant: SecretaryAssistant,
     notifier: Notifier,
+    conversations: ConversationStore | None = None,
 ) -> threading.Thread | None:
     """为文本消息启动后台回复线程；不满足条件时返回 ``None``。"""
 
@@ -178,7 +339,7 @@ def dispatch_reply(
 
     thread = threading.Thread(
         target=reply_to_message,
-        args=(message, assistant, notifier),
+        args=(message, assistant, notifier, conversations),
         name=f"{REPLY_THREAD_PREFIX}-{message.from_user}",
         daemon=True,
     )
@@ -218,13 +379,15 @@ def handle_message(
     *,
     assistant: SecretaryAssistant | None = None,
     notifier: Notifier | None = None,
+    conversations: ConversationStore | None = None,
 ) -> tuple[int, str]:
     """处理 POST 回调消息，返回 ``(状态码, 响应正文)``。
 
     签名校验和解密成功后立即返回空正文（企业微信约定的 ACK）。文本消息
     交给后台线程异步回复，因此不会被被动回复的 5 秒超时截断。传入
     ``assistant`` 和 ``notifier`` 才会真正触发回复；未传时只记录日志，
-    便于单元测试和排查。
+    便于单元测试和排查。``conversations`` 由服务器共享，用于续接同一用户
+    的短期上下文。
     """
 
     encrypt = extract_encrypt(body)
@@ -260,7 +423,10 @@ def handle_message(
         message.content,
     )
     if assistant is not None and notifier is not None:
-        dispatch_reply(message, assistant, notifier)
+        if conversations is None:
+            dispatch_reply(message, assistant, notifier)
+        else:
+            dispatch_reply(message, assistant, notifier, conversations)
     else:
         logger.info("未配置 SecretaryAssistant/通知器，仅记录消息")
     return 200, ""
@@ -275,6 +441,7 @@ class WeComHandler(BaseHTTPRequestHandler):
     crypt: WeComCrypt
     assistant: SecretaryAssistant | None = None
     notifier: Notifier | None = None
+    conversations: ConversationStore | None = None
 
     def do_GET(self) -> None:
         if not self._is_endpoint():
@@ -297,6 +464,7 @@ class WeComHandler(BaseHTTPRequestHandler):
             body,
             assistant=self.assistant,
             notifier=self.notifier,
+            conversations=self.conversations,
         )
         self._send(status, reply)
 
@@ -435,10 +603,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     notifier = build_reply_notifier(settings)
+    conversations = ConversationStore()
 
     WeComHandler.crypt = crypt
     WeComHandler.assistant = assistant
     WeComHandler.notifier = notifier
+    WeComHandler.conversations = conversations
     try:
         server = ThreadingHTTPServer((args.host, args.port), WeComHandler)
     except OSError as exc:

@@ -463,6 +463,8 @@ kb.delete_texts(ids=["doc-001"])
 | `DEEPSEEK_API_KEY` | 无 | 必填 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容接口地址 |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | 模型名 |
+| `DEEPSEEK_THINKING` | `default` | 思考模式：`default` / `enabled` / `disabled` |
+| `DEEPSEEK_REASONING_EFFORT` | 空 | 思考强度：`low` / `high` / `max`，空表示不传 |
 | `CHROMA_DIR` | `data/runtime/chroma` | Chroma 持久化目录 |
 | `DOCS_DIR` | `data/docs` | 个人文档目录（`ingest.py` 默认导入这里） |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-zh-v1.5` | 本地 Embedding 模型，可填本地目录 |

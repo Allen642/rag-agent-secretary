@@ -39,6 +39,8 @@ from .workers import DeskExpert, LifeExpert, StudyExpert
 
 WORKER_NODES = ("study_expert", "life_expert", "desk_expert")
 DEFAULT_RECURSION_LIMIT = 20
+# 短期对话上下文最多保留的消息条数（用户消息 + Worker 最终回答）
+HISTORY_LIMIT = 20
 
 
 def _route_from_supervisor(state: SecretaryState) -> str:
@@ -202,6 +204,61 @@ class SecretaryAssistant:
         return extract_final_answer(
             self.invoke(question, recursion_limit=recursion_limit)
         )
+
+    def ask_turn(
+        self,
+        question: str,
+        *,
+        history: list[AnyMessage] | None = None,
+        recursion_limit: int = DEFAULT_RECURSION_LIMIT,
+    ) -> tuple[str, list[AnyMessage]]:
+        """执行一轮对话，同时返回回答和可用于下一轮的短期历史。
+
+        与 :meth:`ask` 的区别是：这里从最终图状态中过滤出干净的
+        “用户消息 + Worker 最终回答”，去掉工具调用、ToolMessage 和
+        Supervisor 的中间结果，调用方可以直接把返回值作为下一轮的
+        ``history`` 传入，不必关心 LangGraph 的内部消息结构。
+        """
+
+        state = self.invoke(
+            question,
+            history=history,
+            recursion_limit=recursion_limit,
+        )
+        return extract_final_answer(state), self._conversation_history(state)
+
+    @staticmethod
+    def _conversation_history(
+        state: SecretaryState | dict[str, Any],
+        *,
+        limit: int = HISTORY_LIMIT,
+    ) -> list[AnyMessage]:
+        """从最终状态中提取适合复用的自然对话历史。
+
+        只保留：
+          * 用户消息（HumanMessage）；
+          * 不带 tool_calls 的 Worker 最终回答（AIMessage.name 是 Worker 名）。
+
+        带 tool_calls 的 AI 消息、ToolMessage、Supervisor 的路由 JSON 等
+        中间产物都会被过滤掉，避免下一轮把不完整的工具调用配对带进图。
+        """
+
+        kept: list[AnyMessage] = []
+        for message in state.get("messages", []):
+            if isinstance(message, HumanMessage):
+                if message_text(message):
+                    kept.append(message)
+                continue
+
+            if (
+                isinstance(message, AIMessage)
+                and message.name in WORKER_NODES
+                and not getattr(message, "tool_calls", None)
+                and message_text(message)
+            ):
+                kept.append(message)
+
+        return kept[-limit:]
 
 
 def extract_final_answer(state: SecretaryState | dict[str, Any]) -> str:

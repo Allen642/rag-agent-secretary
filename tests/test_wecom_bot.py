@@ -17,10 +17,13 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 
 from secretary.config import get_settings
+from secretary.desk import DeskStore
 from secretary.notify import NoopNotifier, WeComNotifier
 from secretary.notify.wecom_crypt import WeComCrypt
+from secretary.prompts import DESK_EXPERT_PROMPT
 
 # scripts 不是包，按文件路径加载接收消息服务器模块
 _BOT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "wecom_bot.py"
@@ -91,12 +94,21 @@ class _FakeAssistant:
         self.answer = answer
         self.error = error
         self.questions: list[str] = []
+        self.histories: list[list] = []
 
     def ask(self, question: str) -> str:
         self.questions.append(question)
         if self.error is not None:
             raise self.error
         return self.answer
+
+    def ask_turn(self, question: str, *, history=None):
+        self.histories.append(list(history or []))
+        answer = self.ask(question)
+        messages = [*(history or []), HumanMessage(content=question)]
+        if answer:
+            messages.append(AIMessage(content=answer, name="desk_expert"))
+        return answer, messages
 
 
 class _FakeNotifier:
@@ -198,6 +210,212 @@ def test_reply_to_message_survives_notifier_exception(caplog) -> None:
     assert "发送企业微信回复失败" in caplog.text
 
 
+# ------------------------------------------------------------ 短期上下文
+
+
+def _text_message(content: str, from_user: str = "zhangsan"):
+    return wecom_bot.IncomingMessage(
+        from_user=from_user, msg_type="text", content=content
+    )
+
+
+def test_reply_to_message_reuses_previous_turn_history() -> None:
+    assistant = _FakeAssistant()
+    notifier = _FakeNotifier()
+    conversations = wecom_bot.ConversationStore()
+
+    assert wecom_bot.reply_to_message(
+        _text_message("第一句"), assistant, notifier, conversations
+    )
+    assert wecom_bot.reply_to_message(
+        _text_message("第二句"), assistant, notifier, conversations
+    )
+
+    # 第一轮没有历史；第二轮应看到上一轮的用户消息和最终回答
+    assert assistant.histories[0] == []
+    assert [message.content for message in assistant.histories[1]] == [
+        "第一句",
+        "你好，我是秘书。",
+    ]
+
+
+def test_conversation_store_trims_per_user_and_evicts_lru() -> None:
+    store = wecom_bot.ConversationStore(max_messages=3, max_users=2)
+    store.set("a", [HumanMessage(content=str(index)) for index in range(5)])
+    store.set("b", [HumanMessage(content="b")])
+
+    assert [message.content for message in store.get("a")] == ["2", "3", "4"]
+
+    # 访问 a 会刷新 LRU；随后写入 c 时应淘汰最久未使用的 b
+    store.get("a")
+    store.set("c", [HumanMessage(content="c")])
+
+    assert [message.content for message in store.get("a")] == ["2", "3", "4"]
+    assert [message.content for message in store.get("c")] == ["c"]
+    assert store.get("b") == []
+
+
+def test_reply_to_message_serializes_same_user() -> None:
+    store = wecom_bot.ConversationStore()
+    notifier = _FakeNotifier()
+    first_started = threading.Event()
+    release = threading.Event()
+    second_called = threading.Event()
+    calls: list[tuple[str, list]] = []
+    guard = threading.Lock()
+
+    class _SerialAssistant:
+        def ask_turn(self, question: str, *, history=None):
+            with guard:
+                calls.append((question, list(history or [])))
+            if question == "第一条":
+                first_started.set()
+                release.wait(2)
+                answer = "第一条回复"
+            else:
+                second_called.set()
+                answer = "第二条回复"
+            return answer, [
+                *(history or []),
+                HumanMessage(content=question),
+                AIMessage(content=answer, name="desk_expert"),
+            ]
+
+    assistant = _SerialAssistant()
+    first = wecom_bot.dispatch_reply(
+        _text_message("第一条"), assistant, notifier, store
+    )
+    assert first is not None
+    assert first_started.wait(2) is True
+
+    second = wecom_bot.dispatch_reply(
+        _text_message("第二条"), assistant, notifier, store
+    )
+    assert second is not None
+    # 第一条仍持锁时，第二条不能抢跑
+    assert second_called.wait(0.1) is False
+
+    release.set()
+    first.join(2)
+    second.join(2)
+    assert not first.is_alive() and not second.is_alive()
+
+    assert [question for question, _ in calls] == ["第一条", "第二条"]
+    assert [message.content for message in calls[1][1]] == [
+        "第一条",
+        "第一条回复",
+    ]
+    assert [body for _, body, _ in notifier.sent] == ["第一条回复", "第二条回复"]
+
+
+def test_two_turn_wecom_dialog_merges_intent_into_one_task(tmp_path) -> None:
+    desk = DeskStore(tmp_path / "desk.db")
+    conversations = wecom_bot.ConversationStore()
+
+    class _MergeAssistant:
+        """模拟“上一轮说要健身、这一轮只补时间”的合并行为。"""
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, list]] = []
+
+        def ask_turn(self, question: str, *, history=None):
+            history = list(history or [])
+            self.calls.append((question, history))
+            if "健身" in question and not history:
+                answer = "想几点去健身？"
+                return answer, [
+                    HumanMessage(content=question),
+                    AIMessage(content=answer, name="life_expert"),
+                ]
+
+            previous_intent = next(
+                (
+                    str(message.content)
+                    for message in history
+                    if isinstance(message, HumanMessage)
+                    and "健身" in str(message.content)
+                ),
+                "",
+            )
+            if previous_intent and ("八点半" in question or "20:30" in question):
+                desk.add_task("去健身", due_at="2026-11-19 20:30")
+                answer = "已新建任务：20:30 去健身"
+            else:
+                answer = "没听懂，请再说一次"
+            return answer, [
+                *history,
+                HumanMessage(content=question),
+                AIMessage(content=answer, name="desk_expert"),
+            ]
+
+    assistant = _MergeAssistant()
+    notifier = _FakeNotifier()
+
+    assert wecom_bot.reply_to_message(
+        _text_message("去健身"), assistant, notifier, conversations
+    )
+    assert wecom_bot.reply_to_message(
+        _text_message("八点半"), assistant, notifier, conversations
+    )
+
+    assert len(assistant.calls) == 2
+    assert assistant.calls[1][1], "第二轮必须拿到上一轮上下文"
+    assert desk.count() == 1
+    assert desk.list_tasks()[0].title == "去健身"
+    assert "20:30" in notifier.sent[1][1]
+
+
+def test_desk_prompt_contains_intent_merge_rules() -> None:
+    assert "合并成一个完整任务" in DESK_EXPERT_PROMPT
+    assert "update_task" in DESK_EXPERT_PROMPT
+    assert "最多列出 5 条" in DESK_EXPERT_PROMPT
+
+
+# ------------------------------------------------------------ 纯文本与截断
+
+
+def test_plain_text_strips_markdown_but_keeps_lists() -> None:
+    raw = (
+        "## 标题\n"
+        "**加粗** 和 __下划线__\n"
+        "- 列表一\n"
+        "- `代码`\n"
+        "~~删除~~\n\n\n"
+        "结尾"
+    )
+
+    assert wecom_bot._plain_text(raw) == (
+        "标题\n加粗 和 下划线\n- 列表一\n- 代码\n删除\n\n结尾"
+    )
+
+
+def test_truncate_utf8_never_splits_multibyte_characters() -> None:
+    text = "中" * 3000
+
+    truncated = wecom_bot._truncate_utf8(text)
+
+    assert len(truncated.encode("utf-8")) <= wecom_bot.WECOM_TEXT_LIMIT_BYTES
+    assert truncated.endswith(wecom_bot.TRUNCATE_SUFFIX)
+    assert truncated.startswith("中")
+    assert "\ufffd" not in truncated
+
+
+def test_reply_to_message_cleans_markdown_and_truncates() -> None:
+    assistant = _FakeAssistant(answer="## 标题\n**加粗**\n" + "中" * 3000)
+    notifier = _FakeNotifier()
+
+    assert wecom_bot.reply_to_message(
+        _text_message("你好"), assistant, notifier
+    )
+
+    body = notifier.sent[0][1]
+    assert body.startswith("标题\n加粗")
+    assert "**" not in body
+    assert "##" not in body
+    assert body.endswith(wecom_bot.TRUNCATE_SUFFIX)
+    assert len(body.encode("utf-8")) <= wecom_bot.WECOM_TEXT_LIMIT_BYTES
+
+
 # ---------------------------------------------------------------- 分发规则
 
 
@@ -224,10 +442,10 @@ def test_dispatch_reply_runs_in_background_thread() -> None:
     release = threading.Event()
 
     class _BlockingAssistant:
-        def ask(self, question: str) -> str:
+        def ask_turn(self, question: str, *, history=None):
             started.set()
             release.wait(2)
-            return "后台回复"
+            return "后台回复", [*(history or []), HumanMessage(content=question)]
 
     notifier = _FakeNotifier()
     message = wecom_bot.IncomingMessage(
@@ -269,6 +487,28 @@ def test_handle_message_acks_and_dispatches_text(monkeypatch) -> None:
     assert len(captured) == 1
     assert captured[0].from_user == "zhangsan"
     assert captured[0].content == "你好"
+
+
+def test_handle_message_forwards_conversation_store(monkeypatch) -> None:
+    captured: list[object] = []
+
+    def fake_dispatch(message, assistant, notifier, conversations=None):
+        captured.append(conversations)
+
+    monkeypatch.setattr(wecom_bot, "dispatch_reply", fake_dispatch)
+    params, body = _signed_request(_plain_xml(content="你好"))
+    conversations = wecom_bot.ConversationStore()
+
+    wecom_bot.handle_message(
+        _crypt(),
+        params,
+        body,
+        assistant=_FakeAssistant(),
+        notifier=_FakeNotifier(),
+        conversations=conversations,
+    )
+
+    assert captured == [conversations]
 
 
 def test_handle_message_non_text_does_not_dispatch() -> None:
