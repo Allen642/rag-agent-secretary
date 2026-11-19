@@ -204,7 +204,7 @@ class SecretaryAssistant:
         """
 
         return self.graph.stream(
-            self._build_input(question, history),
+            self._build_input(question, history, self._load_preferences()),
             stream_mode="updates",
             config={"recursion_limit": recursion_limit},
         )
@@ -225,7 +225,7 @@ class SecretaryAssistant:
         """
 
         return self.graph.stream(
-            self._build_input(question, history),
+            self._build_input(question, history, self._load_preferences()),
             stream_mode=["updates", "messages"],
             config={"recursion_limit": recursion_limit},
         )
@@ -240,16 +240,37 @@ class SecretaryAssistant:
         """执行一轮完整对话并返回最终图状态。"""
 
         return self.graph.invoke(
-            self._build_input(question, history),
+            self._build_input(question, history, self._load_preferences()),
             config={"recursion_limit": recursion_limit},
         )
 
+    def _load_preferences(self) -> str:
+        """从长期记忆读 kind=preference 的条目，拼成偏好文本；无则返回空串。"""
+
+        # Chroma 的 where 只接受单键或 $and 组合，多条件必须显式写成 $and
+        items = self.knowledge_base.list_texts(
+            limit=20,
+            where={
+                "$and": [
+                    {"source": "auto_memory"},
+                    {"kind": "preference"},
+                ]
+            },
+        )
+        if not items:
+            return ""
+        return "\n".join(f"- {item.text}" for item in items)
+
     @staticmethod
-    def _build_input(question: str, history: list[AnyMessage] | None) -> dict[str, Any]:
-        """组装本轮输入：历史消息 + 当前问题。"""
+    def _build_input(
+        question: str,
+        history: list[AnyMessage] | None,
+        preferences: str = "",
+    ) -> dict[str, Any]:
+        """组装本轮输入：历史消息 + 当前问题 + 用户偏好。"""
 
         messages: list[AnyMessage] = [*(history or []), HumanMessage(content=question)]
-        return {"messages": messages}
+        return {"messages": messages, "user_preferences": preferences}
 
     def ask(
         self,

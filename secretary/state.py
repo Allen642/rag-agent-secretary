@@ -25,6 +25,9 @@ class SecretaryState(TypedDict, total=False):
     next_agent: RouteName
     route_reason: str
 
+    # 用户偏好（从长期记忆读取的 kind=preference 条目），注入到 Worker 的 system prompt
+    user_preferences: str
+
     # 自动记忆节点的执行结果，供命令行展示
     memories_saved: int
     memory_ids: list[str]

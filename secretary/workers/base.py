@@ -69,8 +69,14 @@ class WorkerAgent:
         """LangGraph 节点入口：返回本节点新增的消息。"""
 
         conversation = list(state.get("messages", []))
+        system_prompt = self.system_prompt
+        preferences = (state.get("user_preferences") or "").strip()
+        if preferences:
+            system_prompt += (
+                "\n\n用户偏好（务必遵守，优先级高于上面的默认风格）：\n" + preferences
+            )
         messages: list[AnyMessage] = [
-            SystemMessage(content=self.system_prompt),
+            SystemMessage(content=system_prompt),
             *conversation,
         ]
         new_messages: list[AnyMessage] = []
