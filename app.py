@@ -18,10 +18,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from secretary.config import get_settings, require_api_key
+from secretary.config import get_settings
 from secretary.desk import local_day_bounds, to_local_iso
 from secretary.graph import WORKER_NODES, SecretaryAssistant
-from secretary.llm import build_chat_model
+from secretary.llm import build_chat_model, require_provider_key
 from secretary.message_utils import content_to_text, message_text
 
 MAX_HISTORY_MESSAGES = 20
@@ -37,10 +37,10 @@ st.set_page_config(
 
 @st.cache_resource(show_spinner="正在初始化个人秘书……")
 def get_assistant() -> SecretaryAssistant:
-    """创建并缓存带流式输出的 DeepSeek 助手。"""
+    """创建并缓存带流式输出的助手。"""
 
     settings = get_settings()
-    require_api_key(settings)
+    require_provider_key(settings)
     llm = build_chat_model(settings, streaming=True)
     return SecretaryAssistant(
         llm=llm,
@@ -198,7 +198,12 @@ def _render_sidebar(assistant: SecretaryAssistant) -> None:
     settings = get_settings()
     with st.sidebar:
         st.header("🤖 个人秘书")
-        st.caption(f"模型：`{settings.deepseek_model}` · CPU Embedding")
+        model_name = (
+            settings.zhipu_model
+            if settings.model_provider == "zhipu"
+            else settings.deepseek_model
+        )
+        st.caption(f"模型：`{model_name}` · CPU Embedding")
         st.caption(f"知识库：`{assistant.knowledge_base.persist_dir}`")
 
         col1, col2 = st.columns(2)

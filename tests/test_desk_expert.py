@@ -186,3 +186,23 @@ def test_offline_graph_answers_desk_question(tmp_path) -> None:
     answer = assistant.ask("提醒我明天下午3点交房租")
 
     assert "已调用 list_tasks，链路打通" in answer
+
+
+def test_expert_prompts_require_chat_style() -> None:
+    from secretary.prompts import DESK_EXPERT_PROMPT, LIFE_EXPERT_PROMPT, STUDY_EXPERT_PROMPT
+    for prompt in (STUDY_EXPERT_PROMPT, LIFE_EXPERT_PROMPT):
+        assert "微信聊天" in prompt
+        assert "1-3 句话" in prompt
+        assert "不要复述" in prompt
+    assert "不要复述操作过程" in DESK_EXPERT_PROMPT
+
+
+def test_expert_prompts_handle_greeting_without_listing_abilities() -> None:
+    """三个 expert 遇到寒暄时都只回应一句，不罗列能力/职责/示例。"""
+
+    from secretary.prompts import DESK_EXPERT_PROMPT, LIFE_EXPERT_PROMPT, STUDY_EXPERT_PROMPT
+
+    for prompt in (STUDY_EXPERT_PROMPT, LIFE_EXPERT_PROMPT, DESK_EXPERT_PROMPT):
+        assert "打招呼" in prompt
+        assert "不要罗列能力" in prompt
+        assert "问需要什么" in prompt

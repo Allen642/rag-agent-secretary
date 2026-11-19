@@ -18,9 +18,9 @@ from tempfile import TemporaryDirectory
 
 from langchain_core.messages import ToolMessage
 
-from secretary.config import get_settings, require_api_key
+from secretary.config import get_settings
 from secretary.graph import SecretaryAssistant, extract_final_answer
-from secretary.llm import build_chat_model
+from secretary.llm import build_chat_model, require_provider_key
 from secretary.message_utils import message_text, truncate
 from secretary.rag import ChromaKnowledgeBase
 
@@ -93,7 +93,7 @@ def main() -> int:
     _configure_stdout()
     settings = get_settings()
     try:
-        require_api_key(settings)
+        require_provider_key(settings)
     except RuntimeError as exc:
         print(exc)
         return 2

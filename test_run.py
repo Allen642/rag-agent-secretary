@@ -24,7 +24,7 @@ from tempfile import TemporaryDirectory
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
-from secretary.config import get_settings, require_api_key
+from secretary.config import get_settings
 from secretary.demo_model import DemoChatModel
 from secretary.desk import DeskStore
 from secretary.graph import (
@@ -32,7 +32,7 @@ from secretary.graph import (
     SecretaryAssistant,
     extract_final_answer,
 )
-from secretary.llm import build_chat_model
+from secretary.llm import build_chat_model, require_provider_key
 from secretary.message_utils import message_text, truncate
 from secretary.rag import ChromaKnowledgeBase
 
@@ -127,15 +127,18 @@ def main(argv: list[str] | None = None) -> int:
     settings = get_settings()
 
     if args.offline:
-        print("模式：离线演示（不调用 DeepSeek，仅验证图结构）")
+        print("模式：离线演示（不调用在线模型，仅验证图结构）")
         llm = DemoChatModel()
     else:
-        print(
-            f"模式：DeepSeek | model={settings.deepseek_model} | "
-            f"base_url={settings.deepseek_base_url}"
-        )
+        if settings.model_provider == "zhipu":
+            model_name, base_url = settings.zhipu_model, settings.zhipu_base_url
+            provider_label = "智谱"
+        else:
+            model_name, base_url = settings.deepseek_model, settings.deepseek_base_url
+            provider_label = "DeepSeek"
+        print(f"模式：{provider_label} | model={model_name} | base_url={base_url}")
         try:
-            require_api_key(settings)
+            require_provider_key(settings)
         except RuntimeError as exc:
             print(f"\n{exc}")
             return 2

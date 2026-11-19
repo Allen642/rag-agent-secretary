@@ -38,9 +38,15 @@ if not os.getenv("HF_ENDPOINT", "").strip():
 class Settings:
     """一次进程运行期间使用的不可变配置。"""
 
+    # 主模型 provider：deepseek / zhipu（智谱 AI，OpenAI 兼容接口）
+    model_provider: str
     deepseek_api_key: str | None
     deepseek_base_url: str
     deepseek_model: str
+    # 智谱（OpenAI 兼容接口）
+    zhipu_api_key: str | None
+    zhipu_base_url: str
+    zhipu_model: str
     chroma_dir: Path
     docs_dir: Path
     embedding_model: str
@@ -68,6 +74,12 @@ class Settings:
 
         return bool(self.deepseek_api_key)
 
+    @property
+    def has_zhipu_key(self) -> bool:
+        """智谱 Key 是否存在（不暴露内容）。"""
+
+        return bool(self.zhipu_api_key)
+
 
 def _resolve_path(raw_value: str) -> Path:
     """把相对路径统一解析到项目根目录，避免受启动目录影响。"""
@@ -83,11 +95,18 @@ def get_settings() -> Settings:
     """读取并缓存配置；多次调用不会重复解析 .env。"""
 
     return Settings(
+        model_provider=os.getenv("MODEL_PROVIDER", "deepseek").strip().lower()
+        or "deepseek",
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", "").strip() or None,
         deepseek_base_url=os.getenv(
             "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
         ).strip(),
         deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash").strip(),
+        zhipu_api_key=os.getenv("ZHIPU_API_KEY", "").strip() or None,
+        zhipu_base_url=os.getenv(
+            "ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"
+        ).strip(),
+        zhipu_model=os.getenv("ZHIPU_MODEL", "glm-4-flash").strip(),
         chroma_dir=_resolve_path(os.getenv("CHROMA_DIR", str(DEFAULT_CHROMA_DIR))),
         docs_dir=_resolve_path(os.getenv("DOCS_DIR", str(DEFAULT_DOCS_DIR))),
         embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5").strip(),
@@ -124,3 +143,20 @@ def require_api_key(settings: Settings | None = None) -> str:
             "  python test_run.py --offline"
         )
     return settings.deepseek_api_key
+
+
+def require_zhipu_key(settings: Settings | None = None) -> str:
+    """在创建智谱模型前检查 Key；缺失时给出可操作的报错。"""
+
+    settings = settings or get_settings()
+    if not settings.zhipu_api_key:
+        raise RuntimeError(
+            "未找到有效的 ZHIPU_API_KEY，但当前 MODEL_PROVIDER=zhipu。\n"
+            "请复制 .env.example 为 .env，填入你的智谱 API Key；"
+            "或先在当前终端执行：\n"
+            '  $env:ZHIPU_API_KEY="..."        # PowerShell\n'
+            "如果暂时不想用智谱，可把 MODEL_PROVIDER 改回 deepseek；"
+            "只想验证路由和工具调用链路时可运行：\n"
+            "  python test_run.py --offline"
+        )
+    return settings.zhipu_api_key
