@@ -22,6 +22,9 @@
 :meth:`SecretaryAssistant.ask_turn` 续接短期上下文；同一用户的多条消息
 按到达顺序串行处理，避免上下文互相覆盖。
 
+聊天中发送 ``/model <provider>``（如 ``/model zhipu``）可以全局切换
+模型，服务器会同步切换并立即回复结果，不进入后台对话线程。
+
 启动时必须配置 ``WECOM_TOKEN`` 和 ``WECOM_ENCODING_AES_KEY``，还需要
 ``DEEPSEEK_API_KEY`` 以及企业微信应用的 corpid/agentid/secret；缺关键
 配置时直接报错退出，避免半配置状态对外提供服务。
@@ -421,6 +424,18 @@ def handle_message(
         message.msg_type,
         message.content,
     )
+    # /model 是本地即时命令：同步切换并直接回复，不走后台线程和对话框
+    content = message.content.strip()
+    if content.startswith("/model") and assistant is not None and notifier is not None:
+        parts = content.split()
+        provider = parts[1] if len(parts) > 1 else ""
+        try:
+            result = assistant.switch_model(provider or None)
+        except Exception as exc:
+            result = f"切换失败：{exc}"
+        notifier.send("", result, user_id=message.from_user)
+        return 200, ""
+
     if assistant is not None and notifier is not None:
         if conversations is None:
             dispatch_reply(message, assistant, notifier)

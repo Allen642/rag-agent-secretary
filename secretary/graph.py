@@ -19,7 +19,9 @@ Worker 回到 Supervisor 是为了让主管确认任务完成（选择 FINISH）
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -126,12 +128,43 @@ class SecretaryAssistant:
         self.llm = llm or build_chat_model(self.settings)
         self.knowledge_base = knowledge_base or ChromaKnowledgeBase()
         self.desk_store = desk_store or DeskStore()
+        self._enable_auto_memory = enable_auto_memory
+        self._model_lock = threading.Lock()
         self.graph = build_secretary_graph(
             self.llm,
             knowledge_base=self.knowledge_base,
             desk_store=self.desk_store,
-            enable_auto_memory=enable_auto_memory,
+            enable_auto_memory=self._enable_auto_memory,
         )
+
+    def switch_model(self, provider: str | None = None, model: str | None = None) -> str:
+        """切换 provider/model 并重建图；复用 knowledge_base/desk_store，不重载 embedding。
+
+        provider 只接受 deepseek / zhipu；model 可选，指定则覆盖该 provider 的模型名。
+        切换失败（如 zhipu key 缺失）抛 RuntimeError，由调用方转成可读提示。
+        """
+
+        with self._model_lock:
+            provider = (provider or self.settings.model_provider).strip().lower()
+            if provider not in ("deepseek", "zhipu"):
+                raise ValueError(f"不支持的 provider：{provider}")
+            settings = replace(self.settings, model_provider=provider)
+            if model:
+                if provider == "zhipu":
+                    settings = replace(settings, zhipu_model=model)
+                else:
+                    settings = replace(settings, deepseek_model=model)
+            new_llm = build_chat_model(settings)  # 可能抛 RuntimeError（key 缺失）
+            self.settings = settings
+            self.llm = new_llm
+            self.graph = build_secretary_graph(
+                self.llm,
+                knowledge_base=self.knowledge_base,
+                desk_store=self.desk_store,
+                enable_auto_memory=self._enable_auto_memory,
+            )
+            current = settings.zhipu_model if provider == "zhipu" else settings.deepseek_model
+            return f"已切换到 {provider}/{current}"
 
     def stream(
         self,

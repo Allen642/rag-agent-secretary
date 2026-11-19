@@ -12,6 +12,7 @@
     /tasks        查看当前待办
     /agenda       查看今日安排与已过期未完成
     /done <id>    把指定任务标记为完成
+    /model <provider>  切换模型（deepseek / zhipu）
     /help         显示帮助
 """
 
@@ -44,6 +45,7 @@ HELP_TEXT = """\
   /tasks       查看当前待办
   /agenda      查看今日安排与已过期未完成
   /done <id>   把指定任务标记为完成（id 可用 /tasks 查看）
+  /model [provider]  切换模型（deepseek / zhipu），如 /model zhipu
   /help        显示帮助
 
 直接输入问题即可；想说“记住……”时它会自动写入长期记忆。
@@ -195,6 +197,16 @@ def chat_loop(assistant: SecretaryAssistant, *, verbose: bool, color: bool) -> i
 
         if question == "/done" or question.startswith("/done "):
             _complete_task(assistant, question, painter)
+            continue
+
+        if question.startswith("/model"):
+            parts = question.split()
+            provider = parts[1] if len(parts) > 1 else ""
+            try:
+                result = assistant.switch_model(provider or None)
+                print(painter.green(result))
+            except Exception as exc:
+                print(painter.yellow(f"切换失败：{exc}"))
             continue
 
         try:

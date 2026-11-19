@@ -550,6 +550,69 @@ def test_handle_message_without_reply_dependencies_still_acks() -> None:
     assert reply == ""
 
 
+def test_handle_message_model_command_switches_inline(monkeypatch) -> None:
+    dispatched: list[tuple] = []
+    monkeypatch.setattr(
+        wecom_bot,
+        "dispatch_reply",
+        lambda *args, **kwargs: dispatched.append(args),
+    )
+
+    class _ModelAssistant(_FakeAssistant):
+        def __init__(self) -> None:
+            super().__init__()
+            self.switched: list[str | None] = []
+
+        def switch_model(self, provider=None, model=None):
+            self.switched.append(provider)
+            return f"已切换到 {provider}/{model or 'default'}"
+
+    assistant = _ModelAssistant()
+    notifier = _FakeNotifier()
+    params, body = _signed_request(_plain_xml(content="/model zhipu"))
+
+    status, reply = wecom_bot.handle_message(
+        _crypt(), params, body, assistant=assistant, notifier=notifier
+    )
+
+    assert status == 200
+    assert reply == ""
+    assert assistant.switched == ["zhipu"]
+    # 同步回复，不进入普通对话线程
+    assert assistant.questions == []
+    assert notifier.sent == [("", "已切换到 zhipu/default", "zhangsan")]
+    assert dispatched == []
+
+
+def test_handle_message_model_command_replies_failure(monkeypatch) -> None:
+    dispatched: list[tuple] = []
+    monkeypatch.setattr(
+        wecom_bot,
+        "dispatch_reply",
+        lambda *args, **kwargs: dispatched.append(args),
+    )
+
+    class _FailingAssistant(_FakeAssistant):
+        def switch_model(self, provider=None, model=None):
+            raise RuntimeError("缺少 ZHIPU_API_KEY")
+
+    notifier = _FakeNotifier()
+    params, body = _signed_request(_plain_xml(content="/model zhipu"))
+
+    status, reply = wecom_bot.handle_message(
+        _crypt(),
+        params,
+        body,
+        assistant=_FailingAssistant(),
+        notifier=notifier,
+    )
+
+    assert status == 200
+    assert reply == ""
+    assert notifier.sent == [("", "切换失败：缺少 ZHIPU_API_KEY", "zhangsan")]
+    assert dispatched == []
+
+
 # ---------------------------------------------------------------- 构造依赖
 
 
