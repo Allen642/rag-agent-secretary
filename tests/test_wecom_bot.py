@@ -255,6 +255,17 @@ def test_conversation_store_trims_per_user_and_evicts_lru() -> None:
     assert store.get("b") == []
 
 
+def test_conversation_store_keeps_lock_after_eviction() -> None:
+    store = wecom_bot.ConversationStore(max_messages=2, max_users=1)
+    lock_a = store.lock_for("a")
+    store.set("a", [HumanMessage(content="a")])
+    # 写入 b 触发 a 的 history 被淘汰（max_users=1）
+    store.set("b", [HumanMessage(content="b")])
+    # 淘汰只删 history，锁必须保留，否则同一用户会出现两把锁
+    assert store.lock_for("a") is lock_a
+    assert store.get("a") == []
+
+
 def test_reply_to_message_serializes_same_user() -> None:
     store = wecom_bot.ConversationStore()
     notifier = _FakeNotifier()

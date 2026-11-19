@@ -140,11 +140,10 @@ class ConversationStore:
             self._history[user_id] = trimmed
             self._history.move_to_end(user_id)
             while len(self._history) > self._max_users:
-                evicted, _ = self._history.popitem(last=False)
-                # 线程正在处理某个用户时先保留它的锁，避免出现两把锁
-                lock = self._locks.get(evicted)
-                if lock is None or not lock.locked():
-                    self._locks.pop(evicted, None)
+                # 只淘汰 history，不删 _locks。
+                # lock_for() 返回锁后、acquire 前若该用户的锁被淘汰，会新建第二把锁，
+                # 导致同一用户的消息失去互斥。每个用户一个 Lock 对象很小，保留即可。
+                self._history.popitem(last=False)
 
 
 _MARKDOWN_BOLD = re.compile(r"\*\*(.+?)\*\*")
