@@ -205,10 +205,50 @@ def test_self_edit_reads_planned_files_into_prompt(repo: Path, monkeypatch) -> N
     )
 
     assert len(llm.prompts) == 2
-    # 第一轮是规划；第二轮要带上需求和被读文件的内容
+    # 第一轮是规划，要带上仓库里真实存在的文件清单
     assert "改 return 值" in llm.prompts[0]
+    assert "scripts/demo.py" in llm.prompts[0]
+    # 第二轮要带上需求和被读文件的内容
     assert "=== scripts/demo.py ===" in llm.prompts[1]
     assert "return 'hi'" in llm.prompts[1]
+
+
+def test_self_edit_skips_hallucinated_planned_file(repo: Path, monkeypatch) -> None:
+    """模型规划了不存在的文件时跳过，不要整轮失败。"""
+
+    monkeypatch.setattr(
+        self_edit, "run_pytest", lambda worktree, python_exe=None: (True, "1 passed")
+    )
+    llm = _FakeLLM(
+        [
+            _plan("secretary/secretary.py", "scripts/demo.py"),
+            _replace_hello(),
+        ]
+    )
+
+    result = self_edit.self_edit(
+        "改 return 值", llm=llm, repo_root=repo, branch="auto/test-hallucinated"
+    )
+
+    assert "✅" in result
+    assert "=== secretary/secretary.py ===" not in llm.prompts[1]
+    assert "=== scripts/demo.py ===" in llm.prompts[1]
+
+
+def test_self_edit_fails_when_all_planned_files_missing(repo: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        self_edit, "run_pytest", lambda worktree, python_exe=None: (True, "1 passed")
+    )
+    llm = _FakeLLM([_plan("secretary/secretary.py"), _replace_hello()])
+
+    result = self_edit.self_edit(
+        "改 return 值", llm=llm, repo_root=repo, branch="auto/test-missing"
+    )
+
+    assert "❌" in result
+    assert "都不存在" in result
+    assert not _worktree_exists(repo, "test-missing")
+    assert not _branch_exists(repo, "auto/test-missing")
 
 
 # ------------------------------------------------------------ 越界拒绝

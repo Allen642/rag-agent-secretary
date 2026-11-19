@@ -56,6 +56,9 @@ PLAN_PROMPT = """你是本项目的自动改代码助手（mini coding agent）�
 用户需求：
 {requirement}
 
+仓库里可读的文件（只能从下面这些路径里选，不要编造路径）：
+{file_list}
+
 请判断动手前需要先读哪些文件。最多 {max_files} 个，优先选直接相关的实现和对应测试。
 只能从 secretary/、scripts/、tests/ 下选择。
 
@@ -295,11 +298,34 @@ def _parse_json(text: str) -> Any:
     raise SelfEditError("模型没有返回合法 JSON")
 
 
-def plan_files(requirement: str, llm: Any) -> list[str]:
+def list_files(worktree: Path) -> list[str]:
+    """列出隔离区里受版本控制的文件，供规划阶段参考，避免模型编造路径。"""
+
+    result = _git(worktree, "ls-files", "--", *ALLOWED_DIRS, check=False)
+    if result.returncode != 0:
+        return []
+    files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return sorted(path for path in files if is_allowed_path(path))
+
+
+def plan_files(
+    requirement: str,
+    llm: Any,
+    available: list[str] | None = None,
+) -> list[str]:
     """第一阶段：让模型给出要读的文件列表，并做白名单校验。"""
 
+    if available is None:
+        available = []
+    shown = available[:200]
+    file_list = "\n".join(shown) if shown else "（未提供文件清单）"
+    if len(available) > len(shown):
+        file_list += "\n……（其余文件已省略，请只从已知路径中选择）"
+
     prompt = PLAN_PROMPT.format(
-        requirement=requirement, max_files=MAX_PLAN_FILES
+        requirement=requirement,
+        max_files=MAX_PLAN_FILES,
+        file_list=file_list,
     )
     data = _parse_json(_invoke(llm, prompt))
     if isinstance(data, dict):
@@ -320,15 +346,26 @@ def plan_files(requirement: str, llm: Any) -> list[str]:
 
 
 def read_files(worktree: Path, files: list[str]) -> str:
-    """读取文件内容并拼成带路径标题的上下文。"""
+    """读取文件内容并拼成带路径标题的上下文。
+
+    模型规划时可能编造不存在的路径；这类文件直接跳过，剩余文件仍有内容就
+    继续，只有全部不存在时才判定失败。
+    """
 
     chunks: list[str] = []
     for relative in files:
+        if not is_allowed_path(relative):
+            raise SelfEditError(f"规划了越界路径，拒绝执行：{relative}")
+        if not (worktree / relative).is_file():
+            logger.warning("跳过模型规划的不存在文件：%s", relative)
+            continue
         path = _safe_file(worktree, relative)
         text = path.read_text(encoding="utf-8", errors="replace")
         if len(text) > MAX_FILE_CHARS:
             text = text[:MAX_FILE_CHARS] + "\n……（文件过长，已截断）"
         chunks.append(f"=== {relative} ===\n{text}")
+    if not chunks:
+        raise SelfEditError("规划的文件都不存在，无法进入修改阶段")
     return "\n\n".join(chunks)
 
 
@@ -479,7 +516,7 @@ def self_edit(
     push_note = ""
 
     try:
-        files = plan_files(requirement, model)
+        files = plan_files(requirement, model, list_files(worktree))
         logger.info("规划读取文件：%s", "、".join(files))
         context = read_files(worktree, files)
 
@@ -580,6 +617,7 @@ __all__ = [
     "SelfEditError",
     "apply_edits",
     "is_allowed_path",
+    "list_files",
     "plan_files",
     "propose_edits",
     "read_files",
