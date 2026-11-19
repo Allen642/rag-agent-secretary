@@ -13,6 +13,7 @@ import hashlib
 import importlib.util
 import sys
 import threading
+import types
 from dataclasses import replace
 from pathlib import Path
 
@@ -680,6 +681,136 @@ def test_handle_message_effort_command_replies_failure(monkeypatch) -> None:
         )
     ]
     assert dispatched == []
+
+
+# ---------------------------------------------------------------- 自动改代码
+
+
+def test_handle_message_code_command_dispatches_for_allowed_user(monkeypatch) -> None:
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(wecom_bot, "ALLOWED_CODE_USERS", frozenset({"zhangsan"}))
+    monkeypatch.setattr(
+        wecom_bot,
+        "_dispatch_self_edit",
+        lambda requirement, user_id, notifier: dispatched.append(
+            (requirement, user_id)
+        ),
+    )
+    monkeypatch.setattr(
+        wecom_bot, "dispatch_reply", lambda *args, **kwargs: pytest.fail("不应进入对话线程")
+    )
+
+    notifier = _FakeNotifier()
+    params, body = _signed_request(
+        _plain_xml(content="/code 把 /model 和 /effort 合成一条命令")
+    )
+
+    status, reply = wecom_bot.handle_message(
+        _crypt(), params, body, assistant=_FakeAssistant(), notifier=notifier
+    )
+
+    assert status == 200
+    assert reply == ""
+    assert dispatched == [("把 /model 和 /effort 合成一条命令", "zhangsan")]
+    assert notifier.sent == [("", wecom_bot.CODE_STARTED_TEXT, "zhangsan")]
+
+
+def test_handle_message_code_command_rejects_non_allowed_user(monkeypatch) -> None:
+    dispatched: list[tuple] = []
+    monkeypatch.setattr(wecom_bot, "ALLOWED_CODE_USERS", frozenset({"lisi"}))
+    monkeypatch.setattr(
+        wecom_bot,
+        "_dispatch_self_edit",
+        lambda *args: dispatched.append(args),
+    )
+    monkeypatch.setattr(
+        wecom_bot, "dispatch_reply", lambda *args, **kwargs: pytest.fail("不应进入对话线程")
+    )
+
+    notifier = _FakeNotifier()
+    params, body = _signed_request(_plain_xml(content="/code 改点东西"))
+
+    status, reply = wecom_bot.handle_message(
+        _crypt(), params, body, assistant=_FakeAssistant(), notifier=notifier
+    )
+
+    assert status == 200
+    assert reply == ""
+    assert dispatched == []
+    assert notifier.sent == [("", wecom_bot.CODE_DENIED_TEXT, "zhangsan")]
+
+
+def test_handle_message_code_command_rejects_empty_requirement(monkeypatch) -> None:
+    dispatched: list[tuple] = []
+    # 白名单为空时也要先提示用法，而不是提示没权限
+    monkeypatch.setattr(wecom_bot, "ALLOWED_CODE_USERS", frozenset())
+    monkeypatch.setattr(
+        wecom_bot,
+        "_dispatch_self_edit",
+        lambda *args: dispatched.append(args),
+    )
+
+    notifier = _FakeNotifier()
+    params, body = _signed_request(_plain_xml(content="/code   "))
+
+    status, reply = wecom_bot.handle_message(
+        _crypt(), params, body, assistant=_FakeAssistant(), notifier=notifier
+    )
+
+    assert status == 200
+    assert reply == ""
+    assert dispatched == []
+    assert notifier.sent == [("", wecom_bot.CODE_USAGE_TEXT, "zhangsan")]
+
+
+def test_dispatch_self_edit_runs_in_background_thread(monkeypatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_run(requirement, user_id, notifier):
+        started.set()
+        release.wait(2)
+
+    monkeypatch.setattr(wecom_bot, "_run_self_edit", fake_run)
+
+    thread = wecom_bot._dispatch_self_edit("改代码", "zhangsan", _FakeNotifier())
+
+    assert thread.daemon is True
+    assert started.wait(2) is True
+    release.set()
+    thread.join(2)
+    assert not thread.is_alive()
+
+
+def test_run_self_edit_sends_result_back(monkeypatch) -> None:
+    def fake_self_edit(requirement: str) -> str:
+        return f"分支 auto/x，pytest 通过：{requirement}"
+
+    fake_module = types.ModuleType("self_edit")
+    fake_module.self_edit = fake_self_edit
+    monkeypatch.setitem(sys.modules, "self_edit", fake_module)
+
+    notifier = _FakeNotifier()
+    wecom_bot._run_self_edit("给 /help 加一行说明", "zhangsan", notifier)
+
+    assert notifier.sent == [
+        ("", "分支 auto/x，pytest 通过：给 /help 加一行说明", "zhangsan")
+    ]
+
+
+def test_run_self_edit_reports_failure_instead_of_raising(monkeypatch, caplog) -> None:
+    def boom(requirement: str) -> str:
+        raise RuntimeError("worktree 创建失败")
+
+    fake_module = types.ModuleType("self_edit")
+    fake_module.self_edit = boom
+    monkeypatch.setitem(sys.modules, "self_edit", fake_module)
+
+    notifier = _FakeNotifier()
+    wecom_bot._run_self_edit("改代码", "zhangsan", notifier)
+
+    assert notifier.sent == [("", wecom_bot.CODE_ERROR_TEXT, "zhangsan")]
+    assert "自动改代码失败" in caplog.text
 
 
 # ---------------------------------------------------------------- 构造依赖

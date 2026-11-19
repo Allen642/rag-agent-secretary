@@ -26,6 +26,9 @@
 模型，服务器会同步切换并立即回复结果，不进入后台对话线程。
 发送 ``/effort <low|high|max>`` 可以设置 DeepSeek 推理强度（不带参数恢复
 默认），同样同步处理并直接回复。
+发送 ``/code <需求>`` 会给白名单成员触发一次自动改代码：后台线程在隔离
+worktree 里规划、修改并跑 pytest，完成后主动回报分支名和测试结果。白名单
+来自环境变量 ``SELF_EDIT_USER_IDS``（逗号分隔），为空时谁都不能触发。
 
 启动时必须配置 ``WECOM_TOKEN`` 和 ``WECOM_ENCODING_AES_KEY``，还需要
 ``DEEPSEEK_API_KEY`` 以及企业微信应用的 corpid/agentid/secret；缺关键
@@ -69,6 +72,14 @@ ENDPOINT = "/wecom"
 # 后台线程处理失败时给用户的兜底回复，避免消息石沉大海
 REPLY_ERROR_TEXT = "抱歉，秘书处理这条消息时出了点问题，请稍后再试。"
 REPLY_THREAD_PREFIX = "wecom-reply"
+
+# /code 自动改代码：白名单从 SELF_EDIT_USER_IDS 读取，空集合表示谁都不能触发
+ALLOWED_CODE_USERS: frozenset[str] = frozenset(get_settings().self_edit_user_ids)
+CODE_USAGE_TEXT = "用法：/code <需求描述>"
+CODE_DENIED_TEXT = "你没有触发代码修改的权限。"
+CODE_STARTED_TEXT = "收到需求，正在隔离环境里改代码 + 跑测试，稍后回报。"
+CODE_ERROR_TEXT = "自动改代码时出了点问题，请查看服务器日志。"
+SELF_EDIT_THREAD_PREFIX = "wecom-self-edit"
 
 # 短期对话上下文：每个用户最多保留 20 条，进程内最多保留 256 个用户
 CONVERSATION_HISTORY_LIMIT = 20
@@ -351,6 +362,45 @@ def dispatch_reply(
     return thread
 
 
+def _run_self_edit(requirement: str, user_id: str, notifier: Notifier) -> None:
+    """后台线程入口：跑 mini coding agent，并把结果主动发给触发者。"""
+
+    # scripts 不是包，运行时把同目录加进 sys.path 再导入 self_edit
+    scripts_dir = str(Path(__file__).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+
+    try:
+        from self_edit import self_edit
+
+        result = self_edit(requirement)
+    except Exception:  # noqa: BLE001 - 后台线程不能把异常抛给 HTTP 服务
+        logger.exception("自动改代码失败：user=%s", user_id)
+        result = CODE_ERROR_TEXT
+
+    try:
+        notifier.send("", result, user_id=user_id)
+    except Exception:  # noqa: BLE001 - 发送失败只记日志
+        logger.exception("发送自动改代码结果失败：to=%s", user_id)
+
+
+def _dispatch_self_edit(
+    requirement: str,
+    user_id: str,
+    notifier: Notifier,
+) -> threading.Thread:
+    """把自动改代码放到后台线程，避免阻塞企业微信回调。"""
+
+    thread = threading.Thread(
+        target=_run_self_edit,
+        args=(requirement, user_id, notifier),
+        name=f"{SELF_EDIT_THREAD_PREFIX}-{user_id}",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def handle_verify(
     crypt: WeComCrypt,
     params: dict[str, list[str]],
@@ -447,6 +497,20 @@ def handle_message(
         except Exception as exc:
             result = f"设置失败：{exc}"
         notifier.send("", result, user_id=message.from_user)
+        return 200, ""
+
+    # /code 触发自动改代码：先白名单校验，再丢后台线程，立即 ACK
+    if content.startswith("/code") and assistant is not None and notifier is not None:
+        requirement = content[len("/code") :].strip()
+        if not requirement:
+            notifier.send("", CODE_USAGE_TEXT, user_id=message.from_user)
+            return 200, ""
+        if message.from_user not in ALLOWED_CODE_USERS:
+            logger.warning("/code 被拒绝：from=%s", message.from_user)
+            notifier.send("", CODE_DENIED_TEXT, user_id=message.from_user)
+            return 200, ""
+        _dispatch_self_edit(requirement, message.from_user, notifier)
+        notifier.send("", CODE_STARTED_TEXT, user_id=message.from_user)
         return 200, ""
 
     if assistant is not None and notifier is not None:

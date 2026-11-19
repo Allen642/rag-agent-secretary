@@ -62,6 +62,9 @@ class Settings:
     # 企业微信后台「接收消息」配置的 Token / EncodingAESKey
     wecom_token: str = ""
     wecom_encoding_aes_key: str = ""
+    # ---- 企业微信触发自动改代码（L2 MVP）----
+    # 允许发送 /code 的成员 UserID；空表示谁都不能触发
+    self_edit_user_ids: tuple[str, ...] = ()
     # ---- DeepSeek 推理模式（可选）----
     # default：不显式传参，使用服务端默认；enabled / disabled：显式开关思考模式
     deepseek_thinking: str = "default"
@@ -119,6 +122,11 @@ def get_settings() -> Settings:
         wecom_user_id=os.getenv("WECOM_USER_ID", "@all").strip() or "@all",
         wecom_token=os.getenv("WECOM_TOKEN", "").strip(),
         wecom_encoding_aes_key=os.getenv("WECOM_ENCODING_AES_KEY", "").strip(),
+        self_edit_user_ids=tuple(
+            part.strip()
+            for part in os.getenv("SELF_EDIT_USER_IDS", "").split(",")
+            if part.strip()
+        ),
         deepseek_thinking=(
             os.getenv("DEEPSEEK_THINKING", "default").strip().lower() or "default"
         ),
