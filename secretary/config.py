@@ -19,6 +19,8 @@ ENV_FILE = PROJECT_ROOT / ".env"
 DATA_DIR = PROJECT_ROOT / "data"
 # 运行时数据（个人记忆、向量库）放这里，不提交到 GitHub
 DEFAULT_CHROMA_DIR = DATA_DIR / "runtime" / "chroma"
+# 企业微信会话历史（SQLite）；放运行时目录，重启后可恢复且不受 git 管理
+DEFAULT_CONVERSATION_DB = DATA_DIR / "runtime" / "conversations.db"
 # 个人文档：可以放自己的笔记/档案，也会被 .gitignore 忽略
 DEFAULT_DOCS_DIR = DATA_DIR / "docs"
 # 示例文档：公开可提交，clone 后不用任何隐私数据也能体验导入流程
@@ -51,6 +53,9 @@ class Settings:
     docs_dir: Path
     embedding_model: str
     embedding_device: str = "cpu"
+    # ---- 会话历史持久化 ----
+    # 企业微信短期对话的 SQLite 文件；重启后从这里恢复
+    conversation_db: Path = DEFAULT_CONVERSATION_DB
     # ---- 通知推送（Slice 6a）----
     # none：不推送；wecom：企业微信应用消息
     notify_channel: str = "none"
@@ -117,6 +122,10 @@ def get_settings() -> Settings:
         embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5").strip(),
         # 本项目明确只做 CPU 推理，默认值不提供 CUDA 选项
         embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu").strip() or "cpu",
+        # 留空时回落到默认路径，避免 Path("") 变成项目根目录
+        conversation_db=_resolve_path(
+            os.getenv("CONVERSATION_DB", "").strip() or str(DEFAULT_CONVERSATION_DB)
+        ),
         notify_channel=os.getenv("NOTIFY_CHANNEL", "none").strip() or "none",
         wecom_corp_id=os.getenv("WECOM_CORP_ID", "").strip(),
         wecom_agent_id=os.getenv("WECOM_AGENT_ID", "").strip(),

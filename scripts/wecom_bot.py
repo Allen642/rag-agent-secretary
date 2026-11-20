@@ -18,7 +18,8 @@
 这里统一走「先 ACK、再异步主动回复」。非文本消息暂只记日志，不回复。
 
 为弥补企业微信入口没有 CLI/Web 的会话对象，服务器会用
-:class:`ConversationStore` 在进程内保存每个用户最近 20 条消息，并通过
+:class:`ConversationStore` 保存每个用户最近 20 条消息（配置
+``CONVERSATION_DB`` 后落 SQLite，进程重启仍可恢复），并通过
 :meth:`SecretaryAssistant.ask_turn` 续接短期上下文；同一用户的多条消息
 按到达顺序串行处理，避免上下文互相覆盖。
 
@@ -43,7 +44,6 @@ import re
 import sys
 import threading
 import xml.etree.ElementTree as ET
-from collections import OrderedDict
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -55,6 +55,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from secretary.config import Settings, get_settings
+from secretary.conversation_store import ConversationStore
 from secretary.notify import (
     NoopNotifier,
     Notifier,
@@ -89,9 +90,6 @@ CODE_STARTED_TEXT = "收到需求，正在隔离环境里改代码 + 跑测试�
 CODE_ERROR_TEXT = "自动改代码时出了点问题，请查看服务器日志。"
 SELF_EDIT_THREAD_PREFIX = "wecom-self-edit"
 
-# 短期对话上下文：每个用户最多保留 20 条，进程内最多保留 256 个用户
-CONVERSATION_HISTORY_LIMIT = 20
-CONVERSATION_USER_LIMIT = 256
 # 企业微信文本消息上限按 UTF-8 字节计算，留出安全余量
 WECOM_TEXT_LIMIT_BYTES = 2048
 TRUNCATE_SUFFIX = "……"
@@ -104,70 +102,6 @@ class IncomingMessage:
     from_user: str = ""
     msg_type: str = ""
     content: str = ""
-
-
-class ConversationStore:
-    """进程内短期对话存储：按用户隔离历史，并保证同一用户串行处理。
-
-    企业微信没有像 CLI/Web 那样的会话对象，所以这里用一个共享实例挂住
-    最近几轮对话。历史只存在内存里，进程重启后清空；如果以后需要跨重启
-    保留，可以再替换成 LangGraph 的 SqliteSaver，调用方不需要改。
-
-    * 每个用户最多保留 ``max_messages`` 条消息（按用户裁剪）；
-    * 整个进程最多保留 ``max_users`` 个用户，超出按 LRU 淘汰；
-    * :meth:`lock_for` 返回该用户专属的锁，避免同一个人连发消息时
-      两轮上下文互相覆盖或回复顺序错乱。
-    """
-
-    def __init__(
-        self,
-        *,
-        max_messages: int = CONVERSATION_HISTORY_LIMIT,
-        max_users: int = CONVERSATION_USER_LIMIT,
-    ) -> None:
-        self._max_messages = max(1, max_messages)
-        self._max_users = max(1, max_users)
-        self._history: OrderedDict[str, list[BaseMessage]] = OrderedDict()
-        self._locks: dict[str, threading.Lock] = {}
-        # 保护 _history/_locks 自身；用户级互斥由 lock_for 返回的锁负责
-        self._guard = threading.Lock()
-
-    def lock_for(self, user_id: str) -> threading.Lock:
-        """返回某个用户的专属锁；同一用户的消息会按到达顺序串行处理。"""
-
-        with self._guard:
-            lock = self._locks.get(user_id)
-            if lock is None:
-                lock = threading.Lock()
-                self._locks[user_id] = lock
-            return lock
-
-    def get(self, user_id: str) -> list[BaseMessage]:
-        """读取该用户的历史副本；访问也会刷新 LRU 顺序。"""
-
-        with self._guard:
-            history = self._history.get(user_id)
-            if not history:
-                return []
-            self._history.move_to_end(user_id)
-            return list(history)
-
-    def set(self, user_id: str, history: list[BaseMessage]) -> None:
-        """覆盖写入该用户的历史，并裁剪到上限、淘汰最久未使用的用户。"""
-
-        with self._guard:
-            trimmed = list(history)[-self._max_messages :]
-            if not trimmed:
-                self._history.pop(user_id, None)
-                return
-
-            self._history[user_id] = trimmed
-            self._history.move_to_end(user_id)
-            while len(self._history) > self._max_users:
-                # 只淘汰 history，不删 _locks。
-                # lock_for() 返回锁后、acquire 前若该用户的锁被淘汰，会新建第二把锁，
-                # 导致同一用户的消息失去互斥。每个用户一个 Lock 对象很小，保留即可。
-                self._history.popitem(last=False)
 
 
 _MARKDOWN_BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -712,7 +646,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         channel_name = "不推送"
     logger.info("主动回复通道：%s", channel_name)
-    conversations = ConversationStore()
+    conversations = ConversationStore(db_path=settings.conversation_db)
 
     WeComHandler.crypt = crypt
     WeComHandler.assistant = assistant
