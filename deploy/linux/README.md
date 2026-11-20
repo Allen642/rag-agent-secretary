@@ -70,13 +70,21 @@ journalctl -u wecom-aibot.service -f
 journalctl -u wecom-aibot.service -n 200 --no-pager
 ```
 
-启动成功时会看到类似：
+启动后先看到：
 
 ```text
 智能机器人长连接启动：bot_id=...
+WebSocket 已连接
+认证成功，机器人已上线
 ```
 
-日志只包含 Bot ID，不包含 Secret。
+**只看到“智能机器人长连接启动：bot_id=...”不算启动成功**，那只表示进程
+读到了配置并开始连接；必须看到 **“认证成功，机器人已上线”** 才算真正上线，
+此时给机器人发消息才会有回复。若一直停在“WebSocket 已连接”，检查 Bot ID /
+Secret 是否正确、该机器人是否已被其他长连接占用。
+
+日志只包含 Bot ID，不包含 Secret。断线时会出现 `连接断开：...` 和
+`第 N 次重连`，认证失败等异常会出现 `长连接错误：...`。
 
 ## 5. 停止 / 重启 / 卸载
 

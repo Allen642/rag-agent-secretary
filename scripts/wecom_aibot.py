@@ -70,6 +70,55 @@ def missing_settings(settings: Settings) -> list[str]:
     ]
 
 
+def make_sender(client, *, new_stream_id=None):
+    """构造沿长连接回复的 ``sender``。
+
+    企业微信对 ``enter_chat`` 事件要求用 ``reply_welcome``（``RESPONSE_WELCOME``
+    命令）单独回复，普通消息才走 ``reply_stream``；用错命令会导致欢迎语发送
+    失败。``new_stream_id`` 仅用于测试注入，默认调用 SDK 生成。
+    """
+
+    async def sender(frame: dict, text: str) -> None:
+        if frame.get("cmd") == "aibot_event_callback":
+            await client.reply_welcome(
+                frame,
+                {"msgtype": "text", "text": {"content": text}},
+            )
+            return
+        if new_stream_id is None:
+            from aibot import generate_req_id
+
+            stream_id = generate_req_id("stream")
+        else:
+            stream_id = new_stream_id()
+        await client.reply_stream(frame, stream_id, text, True)
+
+    return sender
+
+
+# ---- 连接状态日志 ----
+
+
+def _on_connected() -> None:
+    logger.info("WebSocket 已连接")
+
+
+def _on_authenticated() -> None:
+    logger.info("认证成功，机器人已上线")
+
+
+def _on_disconnected(reason) -> None:
+    logger.warning("连接断开：%s", reason)
+
+
+def _on_reconnecting(attempt) -> None:
+    logger.warning("第 %s 次重连", attempt)
+
+
+def _on_error(error) -> None:
+    logger.error("长连接错误：%s", error)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="企业微信智能机器人长连接（WebSocket 主动连接）"
@@ -100,7 +149,7 @@ def run_bot(settings: Settings) -> int:
 
     # 延迟导入：--check 不需要加载 SDK 和整条 RAG 依赖链
     try:
-        from aibot import WSClient, WSClientOptions, generate_req_id
+        from aibot import WSClient, WSClientOptions
     except ImportError as exc:
         print(
             f"错误：未安装企业微信智能机器人 SDK（{exc}）。\n"
@@ -134,14 +183,16 @@ def run_bot(settings: Settings) -> int:
         )
     )
 
-    async def sender(frame: dict, text: str) -> None:
-        """沿长连接回复一条已结束的流式消息。"""
-
-        await client.reply_stream(frame, generate_req_id("stream"), text, True)
-
-    runner = AibotRunner(assistant, conversations, sender)
+    runner = AibotRunner(assistant, conversations, make_sender(client))
     client.on("message.text", runner.handle_frame)
     client.on("event.enter_chat", runner.handle_enter_chat)
+
+    # 连接状态日志：认证成功才代表机器人真正上线
+    client.on("connected", _on_connected)
+    client.on("authenticated", _on_authenticated)
+    client.on("disconnected", _on_disconnected)
+    client.on("reconnecting", _on_reconnecting)
+    client.on("error", _on_error)
 
     # 只打印 Bot ID；Secret 永不进入日志
     logger.info("智能机器人长连接启动：bot_id=%s", settings.wecom_aibot_bot_id)
