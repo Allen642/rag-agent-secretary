@@ -813,6 +813,25 @@ def test_run_self_edit_reports_failure_instead_of_raising(monkeypatch, caplog) -
     assert "自动改代码失败" in caplog.text
 
 
+# ---------------------------------------------------------------- 健康检查
+
+
+def test_handle_health_returns_ok() -> None:
+    assert wecom_bot.handle_health() == (200, "ok")
+
+
+def test_do_get_healthz_skips_signature_and_config() -> None:
+    handler = object.__new__(wecom_bot.WeComHandler)
+    handler.path = "/healthz"
+    sent: list[tuple[int, str]] = []
+    handler._send = lambda status, body: sent.append((status, body))
+
+    # 不设置 crypt，验证 /healthz 不依赖企业微信配置和验签
+    handler.do_GET()
+
+    assert sent == [(200, "ok")]
+
+
 # ---------------------------------------------------------------- 构造依赖
 
 

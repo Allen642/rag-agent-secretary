@@ -74,6 +74,8 @@ logger = logging.getLogger("wecom_bot")
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8080
 ENDPOINT = "/wecom"
+# 健康检查端点：供隧道 / 监控探活，不需要验签和任何配置
+HEALTH_ENDPOINT = "/healthz"
 
 # 后台线程处理失败时给用户的兜底回复，避免消息石沉大海
 REPLY_ERROR_TEXT = "抱歉，秘书处理这条消息时出了点问题，请稍后再试。"
@@ -391,6 +393,12 @@ def _dispatch_self_edit(
     return thread
 
 
+def handle_health() -> tuple[int, str]:
+    """返回固定健康响应，供隧道/监控探活。"""
+
+    return 200, "ok"
+
+
 def handle_verify(
     crypt: WeComCrypt,
     params: dict[str, list[str]],
@@ -525,6 +533,10 @@ class WeComHandler(BaseHTTPRequestHandler):
     conversations: ConversationStore | None = None
 
     def do_GET(self) -> None:
+        if urlsplit(self.path).path.rstrip("/") == HEALTH_ENDPOINT:
+            status, body = handle_health()
+            self._send(status, body)
+            return
         if not self._is_endpoint():
             self._send(404, "")
             return
