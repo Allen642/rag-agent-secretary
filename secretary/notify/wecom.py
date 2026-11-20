@@ -92,7 +92,7 @@ class WeComNotifier(Notifier):
             f"access_token={urllib.parse.quote(token)}"
         )
         data = self._request_json(url, payload)
-        error = _api_error(data)
+        error = api_error(data)
         if error is not None:
             logger.warning("企业微信消息发送失败：%s", error)
             return False
@@ -116,7 +116,7 @@ class WeComNotifier(Notifier):
         url = f"{self._api_base}/cgi-bin/gettoken?{query}"
         data = self._request_json(url)
 
-        error = _api_error(data)
+        error = api_error(data)
         if error is not None:
             logger.warning("企业微信 access_token 获取失败：%s", error)
             return None
@@ -187,8 +187,12 @@ def _positive_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
-def _api_error(data: Any) -> str | None:
-    """按企业微信约定检查 ``errcode``；成功返回 None。"""
+def api_error(data: Any) -> str | None:
+    """按企业微信约定检查 ``errcode``；成功返回 None。
+
+    群机器人 Webhook 与应用消息接口共用同一套 ``errcode`` 约定，因此
+    提升为公开函数供 :mod:`secretary.notify.wecom_robot` 复用。
+    """
 
     if not isinstance(data, dict):
         return "响应格式异常"
@@ -196,3 +200,7 @@ def _api_error(data: Any) -> str | None:
     if errcode in (0, "0", None):
         return None
     return f"errcode={errcode} errmsg={data.get('errmsg', '')}"
+
+
+# 兼容旧调用方：保留原私有名作为别名
+_api_error = api_error

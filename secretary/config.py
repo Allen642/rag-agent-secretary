@@ -58,6 +58,8 @@ class Settings:
     wecom_agent_id: str = ""
     wecom_secret: str = ""
     wecom_user_id: str = "@all"
+    # 群机器人 Webhook；配置后优先于应用消息，家庭宽带环境使用
+    wecom_robot_webhook: str = ""
     # ---- 接收消息服务器（Slice 6b1）----
     # 企业微信后台「接收消息」配置的 Token / EncodingAESKey
     wecom_token: str = ""
@@ -120,6 +122,7 @@ def get_settings() -> Settings:
         wecom_agent_id=os.getenv("WECOM_AGENT_ID", "").strip(),
         wecom_secret=os.getenv("WECOM_SECRET", "").strip(),
         wecom_user_id=os.getenv("WECOM_USER_ID", "@all").strip() or "@all",
+        wecom_robot_webhook=os.getenv("WECOM_ROBOT_WEBHOOK", "").strip(),
         wecom_token=os.getenv("WECOM_TOKEN", "").strip(),
         wecom_encoding_aes_key=os.getenv("WECOM_ENCODING_AES_KEY", "").strip(),
         self_edit_user_ids=tuple(

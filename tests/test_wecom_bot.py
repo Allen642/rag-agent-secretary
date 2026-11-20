@@ -22,7 +22,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from secretary.config import get_settings
 from secretary.desk import DeskStore
-from secretary.notify import NoopNotifier, WeComNotifier
+from secretary.notify import NoopNotifier, WeComGroupRobotNotifier, WeComNotifier
 from secretary.notify.wecom_crypt import WeComCrypt
 from secretary.prompts import DESK_EXPERT_PROMPT
 
@@ -816,6 +816,21 @@ def test_run_self_edit_reports_failure_instead_of_raising(monkeypatch, caplog) -
 # ---------------------------------------------------------------- 构造依赖
 
 
+def test_build_reply_notifier_prefers_group_robot() -> None:
+    settings = replace(
+        get_settings(),
+        wecom_robot_webhook="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k",
+        wecom_corp_id="",
+        wecom_agent_id="",
+        wecom_secret="",
+    )
+
+    notifier = wecom_bot.build_reply_notifier(settings)
+
+    assert isinstance(notifier, WeComGroupRobotNotifier)
+    assert notifier._webhook_url.endswith("key=k")
+
+
 def test_build_reply_notifier_returns_wecom_when_configured() -> None:
     settings = replace(
         get_settings(),
@@ -823,6 +838,7 @@ def test_build_reply_notifier_returns_wecom_when_configured() -> None:
         wecom_agent_id="1000002",
         wecom_secret="secret",
         wecom_user_id="zhangsan",
+        wecom_robot_webhook="",
     )
 
     notifier = wecom_bot.build_reply_notifier(settings)
@@ -837,6 +853,7 @@ def test_build_reply_notifier_falls_back_when_incomplete(caplog) -> None:
         wecom_corp_id="corp",
         wecom_agent_id="",
         wecom_secret="",
+        wecom_robot_webhook="",
     )
 
     notifier = wecom_bot.build_reply_notifier(settings)

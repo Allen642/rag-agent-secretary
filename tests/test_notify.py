@@ -16,7 +16,12 @@ import pytest
 import secretary.notify.wecom as wecom_module
 from secretary.config import get_settings
 from secretary.desk import DeskStore
-from secretary.notify import NoopNotifier, WeComNotifier, make_notifier
+from secretary.notify import (
+    NoopNotifier,
+    WeComGroupRobotNotifier,
+    WeComNotifier,
+    make_notifier,
+)
 
 # scripts 不是包，按文件路径加载 daemon 模块
 _DAEMON_PATH = Path(__file__).resolve().parents[1] / "scripts" / "remind_daemon.py"
@@ -253,6 +258,30 @@ def test_make_notifier_wecom_returns_client() -> None:
     assert isinstance(notifier, WeComNotifier)
     assert notifier._agent_id == 1000002
     assert notifier._user_id == "zhangsan"
+
+
+def test_make_notifier_wecom_robot_returns_robot_client() -> None:
+    settings = replace(
+        get_settings(),
+        notify_channel="wecom_robot",
+        wecom_robot_webhook="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k",
+    )
+
+    notifier = make_notifier(settings)
+
+    assert isinstance(notifier, WeComGroupRobotNotifier)
+    assert notifier._webhook_url.endswith("key=k")
+
+
+def test_make_notifier_wecom_robot_without_webhook_falls_back(caplog) -> None:
+    settings = replace(
+        get_settings(),
+        notify_channel="wecom_robot",
+        wecom_robot_webhook="  ",
+    )
+
+    assert isinstance(make_notifier(settings), NoopNotifier)
+    assert "WECOM_ROBOT_WEBHOOK" in caplog.text
 
 
 def test_make_notifier_incomplete_or_unknown_falls_back(caplog) -> None:

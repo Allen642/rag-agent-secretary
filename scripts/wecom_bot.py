@@ -55,8 +55,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from secretary.config import Settings, get_settings
-from secretary.notify import NoopNotifier, Notifier, WeComNotifier
+from secretary.notify import (
+    NoopNotifier,
+    Notifier,
+    WeComGroupRobotNotifier,
+    WeComNotifier,
+)
 from secretary.notify.wecom_crypt import WeComCrypt
+from secretary.text_utils import truncate_utf8 as _truncate_utf8
 
 if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
@@ -191,22 +197,6 @@ def _plain_text(text: str) -> str:
     # 折叠三个及以上连续换行，保留正常的段落和列表换行
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
-
-
-def _truncate_utf8(text: str, limit: int = WECOM_TEXT_LIMIT_BYTES) -> str:
-    """按 UTF-8 字节数截断，绝不切断多字节字符。"""
-
-    data = text.encode("utf-8")
-    if len(data) <= limit:
-        return text
-
-    suffix = TRUNCATE_SUFFIX.encode("utf-8")
-    if limit <= len(suffix):
-        return TRUNCATE_SUFFIX.encode("utf-8")[:limit].decode("utf-8", "ignore")
-
-    # 先按字节切，再用 ignore 丢掉末尾可能被切断的半个字符
-    body = data[: limit - len(suffix)].decode("utf-8", "ignore").rstrip()
-    return body + TRUNCATE_SUFFIX
 
 
 def _ask_with_history(
@@ -627,7 +617,17 @@ def build_assistant(settings: Settings) -> SecretaryAssistant:
 
 
 def build_reply_notifier(settings: Settings) -> Notifier:
-    """构造用于主动回复的通知器；企业微信配置缺失时回退为 Noop。"""
+    """构造用于主动回复的通知器；企业微信配置缺失时回退为 Noop。
+
+    群机器人优先级最高：只要配置了 ``WECOM_ROBOT_WEBHOOK``，回复就发到
+    对应的群，不再看 ``NOTIFY_CHANNEL`` 和应用消息配置。群机器人不校验
+    出口 IP，适合家庭宽带环境。
+    """
+
+    webhook = (settings.wecom_robot_webhook or "").strip()
+    if webhook:
+        logger.info("主动回复通道：企业微信群机器人")
+        return WeComGroupRobotNotifier(webhook)
 
     missing = [
         name
@@ -694,6 +694,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     notifier = build_reply_notifier(settings)
+    if isinstance(notifier, WeComGroupRobotNotifier):
+        channel_name = "企业微信群机器人"
+    elif isinstance(notifier, WeComNotifier):
+        channel_name = "企业微信应用消息"
+    else:
+        channel_name = "不推送"
+    logger.info("主动回复通道：%s", channel_name)
     conversations = ConversationStore()
 
     WeComHandler.crypt = crypt

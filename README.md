@@ -329,6 +329,25 @@ WECOM_USER_ID=@all
 会在进程内缓存并提前刷新；推送失败只记警告，不会中断 daemon。`NOTIFY_CHANNEL`
 保持默认 `none` 时只打印到终端。
 
+### 家庭宽带 / 无固定 IP 部署
+
+企业微信自建应用的「应用消息」接口要求调用方出口 IP 在企业后台的
+「企业可信IP」白名单内。家庭宽带的公网 IP 会变化，甚至处于 CGNAT 后面
+没有独立公网 IP，此时调用 `message/send` 会返回 `60020 not allow to
+access from your ip`。
+
+群机器人 Webhook 走另一条通道：不需要 `access_token`，也不校验调用方
+出口 IP，只要 Webhook 地址有效就能发送。因此家庭宽带环境推荐：
+
+```dotenv
+WECOM_ROBOT_WEBHOOK=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
+```
+
+Webhook 地址在群设置 → 群机器人 → 添加后复制。配置后，接收消息服务器的
+主动回复会优先走群机器人，不再使用应用消息，也不看 `NOTIFY_CHANNEL`。
+注意：回复会发到机器人所在的群，群成员都能看到，而不是只发给发消息的人。
+`/code`、`/model` 等命令的回复同样会进入该群。
+
 ### 三端查看
 
 - **命令行**：`chat.py` 内输入 `/tasks`（当前待办）、`/agenda`（今日安排 +
@@ -474,11 +493,12 @@ kb.delete_texts(ids=["doc-001"])
 | `TRANSFORMERS_OFFLINE` | 未设置 | 设为 `1` 后强制离线加载缓存 |
 | `BRIEFING_TIME` | `08:00` | 提醒 daemon 每日简报时刻（HH:MM） |
 | `REMIND_INTERVAL_SECONDS` | `30` | 提醒 daemon 轮询间隔（秒） |
-| `NOTIFY_CHANNEL` | `none` | 通知渠道：`none` / `wecom` |
+| `NOTIFY_CHANNEL` | `none` | 通知渠道：`none` / `wecom` / `wecom_robot` |
 | `WECOM_CORP_ID` | 空 | 企业微信企业 ID |
 | `WECOM_AGENT_ID` | 空 | 企业微信应用 AgentId |
 | `WECOM_SECRET` | 空 | 企业微信应用 Secret |
 | `WECOM_USER_ID` | `@all` | 接收人，多个 UserID 用 `\|` 分隔 |
+| `WECOM_ROBOT_WEBHOOK` | 空 | 企业微信群机器人 Webhook；配置后优先于应用消息，家庭宽带环境使用 |
 
 系统环境变量优先于 `.env`。代码在未设置 `HF_ENDPOINT` 时会自动回退到
 `https://hf-mirror.com`；如需官方源，显式设置：
