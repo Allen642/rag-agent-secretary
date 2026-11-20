@@ -69,6 +69,10 @@ class Settings:
     # 企业微信后台「接收消息」配置的 Token / EncodingAESKey
     wecom_token: str = ""
     wecom_encoding_aes_key: str = ""
+    # ---- 企业微信智能机器人（长连接 API 模式）----
+    # 机器人详情页 -> API 模式 -> 使用长连接；无需公网 IP / 加解密
+    wecom_aibot_bot_id: str = ""
+    wecom_aibot_secret: str = ""
     # ---- 企业微信触发自动改代码（L2 MVP）----
     # 允许发送 /code 的成员 UserID；空表示谁都不能触发
     self_edit_user_ids: tuple[str, ...] = ()
@@ -134,6 +138,8 @@ def get_settings() -> Settings:
         wecom_robot_webhook=os.getenv("WECOM_ROBOT_WEBHOOK", "").strip(),
         wecom_token=os.getenv("WECOM_TOKEN", "").strip(),
         wecom_encoding_aes_key=os.getenv("WECOM_ENCODING_AES_KEY", "").strip(),
+        wecom_aibot_bot_id=os.getenv("WECOM_AIBOT_BOT_ID", "").strip(),
+        wecom_aibot_secret=os.getenv("WECOM_AIBOT_SECRET", "").strip(),
         self_edit_user_ids=tuple(
             part.strip()
             for part in os.getenv("SELF_EDIT_USER_IDS", "").split(",")
