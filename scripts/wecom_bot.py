@@ -638,7 +638,6 @@ def build_reply_notifier(settings: Settings) -> Notifier:
 
     webhook = (settings.wecom_robot_webhook or "").strip()
     if webhook:
-        logger.info("主动回复通道：企业微信群机器人")
         return WeComGroupRobotNotifier(webhook)
 
     missing = [

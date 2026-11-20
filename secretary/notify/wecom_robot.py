@@ -63,21 +63,21 @@ class WeComGroupRobotNotifier(Notifier):
         content = truncate_utf8(content, WECOM_ROBOT_TEXT_LIMIT_BYTES)
         payload = {"msgtype": "text", "text": {"content": content}}
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(
-            self._webhook_url,
-            data=data,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
 
         try:
+            request = urllib.request.Request(
+                self._webhook_url,
+                data=data,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 raw = response.read()
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            logger.warning("企业微信群机器人请求失败：%s", exc)
+            logger.warning("企业微信群机器人 Webhook 地址无效或请求失败：%s", exc)
             return False
 
         try:

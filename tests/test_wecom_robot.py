@@ -126,6 +126,17 @@ def test_empty_webhook_returns_false_without_request(install_urlopen, caplog) ->
     assert "未配置" in caplog.text
 
 
+def test_invalid_webhook_url_returns_false_without_raising(
+    install_urlopen, caplog
+) -> None:
+    recorder = install_urlopen()
+
+    assert WeComGroupRobotNotifier("not-a-url").send("标题", "正文") is False
+
+    assert recorder.requests == []
+    assert "Webhook 地址无效" in caplog.text
+
+
 def test_user_id_is_ignored_but_accepted(install_urlopen) -> None:
     recorder = install_urlopen({"errcode": 0, "errmsg": "ok"})
 
