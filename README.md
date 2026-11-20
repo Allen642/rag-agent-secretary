@@ -486,6 +486,7 @@ kb.delete_texts(ids=["doc-001"])
 | `DEEPSEEK_REASONING_EFFORT` | 空 | 思考强度：`low` / `high` / `max`，空表示不传 |
 | `CHROMA_DIR` | `data/runtime/chroma` | Chroma 持久化目录 |
 | `DOCS_DIR` | `data/docs` | 个人文档目录（`ingest.py` 默认导入这里） |
+| `CONVERSATION_DB` | `data/runtime/conversations.db` | 企业微信会话历史 SQLite 路径；进程重启后可恢复上下文 |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-zh-v1.5` | 本地 Embedding 模型，可填本地目录 |
 | `EMBEDDING_DEVICE` | `cpu` | 只允许 `cpu` |
 | `HF_ENDPOINT` | `https://hf-mirror.com` | Hugging Face 镜像 |
@@ -757,6 +758,7 @@ $env:HF_ENDPOINT="https://hf-mirror.com"
 ```text
 data/runtime/chroma/     # 向量库与自动记忆（可重建）
 data/runtime/desk.db     # 工作台待办/日程/通知（sqlite，本地数据）
+data/runtime/conversations.db  # 企业微信会话历史（sqlite）
 data/docs/               # 你的原始文档（导入时读取）
 ```
 
@@ -765,6 +767,7 @@ data/docs/               # 你的原始文档（导入时读取）
 ```powershell
 Remove-Item -Recurse -Force D:\rag-agent-secretary\data\runtime\chroma
 Remove-Item -Force D:\rag-agent-secretary\data\runtime\desk.db
+Remove-Item -Force D:\rag-agent-secretary\data\runtime\conversations.db
 ```
 
 删除后重新执行 `scripts\ingest.py ingest` 即可从 `data/docs` 重建向量库；

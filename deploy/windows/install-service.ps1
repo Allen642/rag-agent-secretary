@@ -9,6 +9,10 @@
     process to restart automatically after a crash (5 second delay), and sets
     the service to start automatically at boot.
 
+    Stdout/stderr logs rotate at 10 MB (AppRotateFiles/AppRotateOnline with
+    AppRotateBytes 10485760), so a 24/7 deployment cannot grow them without
+    bound.
+
     The script is idempotent: if the service already exists it is stopped and
     removed before being created again. It never writes secrets; the service
     reads the repository .env through secretary.config.
@@ -112,6 +116,9 @@ Invoke-Nssm install $ServiceName $PythonPath $ScriptPath
 Invoke-Nssm set $ServiceName AppDirectory $AppDirectory
 Invoke-Nssm set $ServiceName AppStdout $stdoutPath
 Invoke-Nssm set $ServiceName AppStderr $stderrPath
+Invoke-Nssm set $ServiceName AppRotateFiles 1
+Invoke-Nssm set $ServiceName AppRotateOnline 1
+Invoke-Nssm set $ServiceName AppRotateBytes 10485760
 Invoke-Nssm set $ServiceName AppExit Default Restart
 Invoke-Nssm set $ServiceName AppRestartDelay 5000
 Invoke-Nssm set $ServiceName Start SERVICE_AUTO_START

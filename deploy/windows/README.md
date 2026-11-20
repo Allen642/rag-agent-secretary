@@ -79,7 +79,80 @@ cd F:\rag-agent-secretary
 服务以 LocalSystem 运行，仓库目录只需可读、`data\runtime\` 可写。不要把
 仓库放在需要交互式登录才能访问的网络盘上。
 
-## 4. 关闭自动睡眠 / 休眠
+## 4. 服务账户与模型缓存
+
+NSSM 默认以 LocalSystem 账户运行服务，它的 `%USERPROFILE%` 是：
+
+```text
+C:\Windows\System32\config\systemprofile
+```
+
+因此服务看不到你登录用户目录下的 Hugging Face 缓存
+（`C:\Users\<USER>\.cache\huggingface\hub`）。首次启动时 LocalSystem
+会重新下载约 192MB 的 embedding 模型；如果家里网络当时不可用，服务会
+启动失败并不断重启。
+
+任选一种解法。
+
+### a) 推荐：把缓存放到 ProgramData（在 `.env` 中指定 HF_HOME）
+
+在仓库根目录的 `.env` 增加：
+
+```dotenv
+HF_HOME=C:\ProgramData\huggingface
+```
+
+创建目录，并把已有缓存复制过去（目录不存在就先创建）：
+
+```powershell
+New-Item -ItemType Directory -Force C:\ProgramData\huggingface\hub
+Copy-Item -Recurse -Force "$env:USERPROFILE\.cache\huggingface\hub\*" C:\ProgramData\huggingface\hub
+```
+
+`huggingface_hub` 会把模型放在 `%HF_HOME%\hub`，所以目标路径是
+`C:\ProgramData\huggingface\hub`。LocalSystem 对该目录默认可读。
+
+### b) 或者复制到 LocalSystem 的用户目录
+
+不设置 `HF_HOME` 时，LocalSystem 会使用：
+
+```text
+C:\Windows\System32\config\systemprofile\.cache\huggingface
+```
+
+可以从当前用户复制：
+
+```powershell
+New-Item -ItemType Directory -Force C:\Windows\System32\config\systemprofile\.cache\huggingface
+Copy-Item -Recurse -Force "$env:USERPROFILE\.cache\huggingface\hub" C:\Windows\System32\config\systemprofile\.cache\huggingface\
+```
+
+改完 `.env` 或复制完缓存后重启服务：
+
+```powershell
+Restart-Service -Name wecom-bot
+```
+
+### 验证不再联网下载
+
+模型就绪后，在 `.env` 增加：
+
+```dotenv
+TRANSFORMERS_OFFLINE=1
+```
+
+再重启服务并观察日志：
+
+```powershell
+Restart-Service -Name wecom-bot
+Get-Content .\data\runtime\logs\wecom-bot.err.log -Tail 50 -Wait
+```
+
+服务能正常启动、日志里没有下载进度，就说明缓存路径正确、后续不会再联网
+拉模型。如果启动时报找不到模型，先确认 `HF_HOME` 指向的目录下确实有
+`hub`，且 LocalSystem 可读。
+
+## 5. 关闭自动睡眠 / 休眠
 
 旧笔记本默认会睡眠，服务会跟着断线。
 
@@ -96,7 +169,7 @@ powercfg /change hibernate-timeout-ac 0
 如果笔记本有厂商电源管理软件，也要把「合盖动作」设为「不采取任何操作」，
 否则合盖后仍会断网。
 
-## 5. 设置自动登录（可选但推荐）
+## 6. 设置自动登录（可选但推荐）
 
 Windows 服务本身不依赖用户登录，但自动登录方便远程排障和手动启动 GUI
 工具。
@@ -110,7 +183,7 @@ Windows 服务本身不依赖用户登录，但自动登录方便远程排障和
 也可以使用微软 Sysinternals 的 Autologon 工具。自动登录会把密码保存在本机
 凭据中，请确保这台机器只放在可信的家庭网络里。
 
-## 6. BIOS 来电自启
+## 7. BIOS 来电自启
 
 断电恢复后需要机器自己开机：
 
@@ -121,7 +194,7 @@ Windows 服务本身不依赖用户登录，但自动登录方便远程排障和
 
 不同品牌名称不同，找不到时优先查主板/笔记本型号的手册。
 
-## 7. 日常运维
+## 8. 日常运维
 
 ```powershell
 Get-Service -Name wecom-bot
@@ -150,7 +223,7 @@ Get-Content .\data\runtime\logs\wecom-bot.err.log -Tail 50
   `-NoProfile -ExecutionPolicy Bypass -File "F:\rag-agent-secretary\deploy\tools\healthcheck.ps1"`
 * 「条件」里勾选「不管用户是否登录都要运行」。
 
-## 8. 卸载
+## 9. 卸载
 
 管理员 PowerShell：
 
