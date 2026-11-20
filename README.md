@@ -355,6 +355,64 @@ Webhook 地址在群设置 → 群机器人 → 添加后复制。配置后，�
 - **Web**：侧栏展开「工作台」，查看今日待办、未读通知，并可直接点“完成”。
 - **CLI**：`scripts/desk.py list` / `list --all`，适合脚本或批量处理。
 
+## 智能机器人长连接
+
+如果不想暴露公网 IP、不想配 Tunnel / 可信 IP，也不想建群，可以直接使用
+企业微信「智能机器人」的长连接 API：本服务主动连接
+`wss://openws.work.weixin.qq.com`，企业微信沿这条连接推送消息，回复也走
+同一条连接。
+
+### 开通与配置
+
+1. 企业微信管理后台 → 智能机器人 → 进入机器人详情页；
+2. 打开「API 模式」→ 选择「使用长连接」；
+3. 复制 Bot ID 和 Secret，写入 `.env`：
+
+```dotenv
+WECOM_AIBOT_BOT_ID=你的BotID
+WECOM_AIBOT_SECRET=你的Secret
+```
+
+Bot ID / Secret 等同凭证，不要提交到 GitHub；`.env` 已被 `.gitignore` 忽略。
+
+### 启动
+
+```powershell
+cd D:\rag-agent-secretary
+# 只校验配置：齐全返回 0；缺失会列出变量名并返回 1
+.\.venv\Scripts\python.exe scripts\wecom_aibot.py --check
+
+# 启动长连接（前台运行，Ctrl+C 退出）
+.\.venv\Scripts\python.exe scripts\wecom_aibot.py
+```
+
+启动日志只打印 Bot ID，不会打印 Secret。SDK 内置心跳和断线重连，网络
+恢复后会自动重新认证。
+
+### 与自建应用回调的区别
+
+| 项目 | 自建应用 HTTP 回调 | 智能机器人长连接 |
+| --- | --- | --- |
+| 入口 | `scripts/wecom_bot.py` | `scripts/wecom_aibot.py` |
+| 公网 IP / Tunnel | 需要 | 不需要 |
+| 消息加解密 | 需要 Token / EncodingAESKey | 不需要 |
+| 可信 IP 白名单 | 需要 | 不需要 |
+| 建群 | 不需要（但回复可能进群） | 不需要 |
+| 实例数 | 可多实例 | 同一机器人同一时间只能一个长连接 |
+
+注意事项：
+
+- 长连接是独占的：ECS 和家里不能同时开。后连上的会顶掉前一个，表现为
+  消息偶尔没有回复；
+- `scripts/wecom_bot.py` 保持原样，两条通道可以并存，但建议只启用一条；
+- 长连接模式暂不支持 `/code`，会直接回复“长连接模式暂不支持 /code”；
+  `/model`、`/effort` 仍然可用；
+- 机器人权限里的「消息」等接口是给 CLI / MCP 等主动调用场景用的，基础
+  收发消息不依赖这些权限；
+- 当前只处理文本消息，图片、文件、语音、模板卡片暂未实现。
+
+Linux 常驻部署（systemd）见 [`deploy/linux/README.md`](deploy/linux/README.md)。
+
 ## Web UI（推荐）
 
 ```powershell
@@ -500,6 +558,8 @@ kb.delete_texts(ids=["doc-001"])
 | `WECOM_SECRET` | 空 | 企业微信应用 Secret |
 | `WECOM_USER_ID` | `@all` | 接收人，多个 UserID 用 `\|` 分隔 |
 | `WECOM_ROBOT_WEBHOOK` | 空 | 企业微信群机器人 Webhook；配置后优先于应用消息，家庭宽带环境使用 |
+| `WECOM_AIBOT_BOT_ID` | 空 | 智能机器人长连接 Bot ID |
+| `WECOM_AIBOT_SECRET` | 空 | 智能机器人长连接 Secret；不要提交真实值 |
 
 系统环境变量优先于 `.env`。代码在未设置 `HF_ENDPOINT` 时会自动回退到
 `https://hf-mirror.com`；如需官方源，显式设置：

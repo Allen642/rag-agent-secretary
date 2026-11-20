@@ -1,0 +1,16 @@
+[Unit]
+Description=WeCom AI bot (long connection)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/rag-agent-secretary
+ExecStart=/opt/rag-agent-secretary/.venv/bin/python /opt/rag-agent-secretary/scripts/wecom_aibot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
