@@ -1,0 +1,14 @@
+# Cloudflare Tunnel 配置示例。
+# 复制为 config.yml 后替换 <TUNNEL_UUID> / <USER> / 域名，不要提交真实凭据。
+tunnel: <TUNNEL_UUID>
+credentials-file: C:\Users\<USER>\.cloudflared\<TUNNEL_UUID>.json
+
+ingress:
+  # 企业微信回调入口
+  - hostname: wecom.example.com
+    service: http://localhost:8080
+  # 远程运维 SSH；必须在 Cloudflare Access 中加策略，禁止裸奔
+  - hostname: ssh.example.com
+    service: ssh://localhost:22
+  # 未匹配的请求统一返回 404
+  - service: http_status:404
